@@ -1,0 +1,42 @@
+;; End-to-end: the `store` repo + query-as-data driving the Postgres adaptor against
+;; a real server. Requires PG (PG* env, default postgres/postgres @ 127.0.0.1:5432).
+(defmodule repo-test
+  (:use test)
+  (:alias repo)
+  (:alias query)
+  (:alias pg))
+
+(defn opts ()
+  {:host (or (getenv "PGHOST") "127.0.0.1")
+   :port (string->number (or (getenv "PGPORT") "5432"))
+   :user (or (getenv "PGUSER") "postgres")
+   :password (or (getenv "PGPASSWORD") "postgres")
+   :database (or (getenv "PGDATABASE") "postgres")
+   ;; size 1 so the temp table (session-scoped) is on the one connection we reuse
+   :size 1})
+
+(describe "repo over the pg adaptor (query-as-data → real Postgres)"
+  :isolated
+  (test "all returns rows as maps; where/order compile and run"
+    (let (r (repo/open (pg/adaptor) (opts)))
+      (repo/exec r "create temp table t (id int, name text, amount numeric)" [])
+      (repo/exec r "insert into t values ($1,$2,$3),($4,$5,$6),($7,$8,$9)"
+        [1 "ada" "9.99" 2 "grace" "100.50" 3 "alan" "0.01"])
+      (let (rows (repo/all r (-> (query/from :t)
+                               (query/where [:> :id 1])
+                               (query/order-by :id))))
+        (is (= (count rows) 2))
+        (is (= (get (first rows) :name) "grace"))
+        (is (= (get (first rows) :id) 2))
+        ;; numeric decodes to an exact decimal through the whole stack
+        (is (= (get (first rows) :amount) 100.50M)))
+      (let (one (repo/one r (-> (query/from :t) (query/where [:= :name "alan"]))))
+        (is (= (get one :id) 3))
+        (is (= (get one :amount) 0.01M)))
+      ;; in / projection
+      (let (names (repo/all r (-> (query/from :t)
+                                (query/select [:name])
+                                (query/where [:in :id [1 3]])
+                                (query/order-by :id))))
+        (is (= (map (fn (m) (get m :name)) names) (list "ada" "alan"))))
+      (repo/close r))))

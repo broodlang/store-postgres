@@ -1,0 +1,27 @@
+(defmodule pg
+  "The PostgreSQL adaptor for the `store` storage library.
+
+  `store` is database-agnostic: its repo talks to an *adaptor* — a small map of
+  functions — so it never depends on a specific driver. This module provides that
+  map (`adaptor`), backed by this package's native pooled Postgres driver (the
+  `wire/*`, `conn`, `connection`, `pool` modules). A different database is just a
+  different package implementing the same contract."
+  (:alias pool)
+  (:alias conn))
+
+(defn adaptor ()
+  "The store adaptor contract, backed by the pooled Postgres driver:
+    :start-pool (opts)         -> pool   ; opts: :host :port :user :password :database :size
+    :stop-pool  (pool)         -> :ok
+    :exec       (pool sql ps)  -> {:columns [name…] :rows [[val…]…]}   ; parameterized ($1…)
+    :query      (pool sql)     -> {:columns … :rows …}                 ; no params"
+  {:start-pool (fn (opts) (pool/start opts))
+   :stop-pool  (fn (p) (pool/stop p))
+   :exec       (fn (p sql params) (pool/exec p sql params))
+   :query      (fn (p sql) (pool/query p sql))})
+
+;; ---- low-level single-connection API (re-exported for direct use) -----------
+
+(defn connect (opts)
+  "Open one (unpooled) connection. `opts`: :host :port :user :password :database."
+  (conn/connect opts))
