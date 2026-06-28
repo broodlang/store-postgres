@@ -8,7 +8,8 @@
   different package implementing the same contract."
   (:alias pool)
   (:alias connection)
-  (:alias conn))
+  (:alias conn)
+  (:alias repo))
 
 (defn adaptor ()
   "The store adaptor contract, backed by the pooled Postgres driver. Each query
@@ -49,6 +50,34 @@
   maps — the adaptor-contract row shape."
   (let (cols (map keyword (get result :columns)))
     (map (fn (row) (zipmap cols row)) (get result :rows))))
+
+;; ---- environment / convenience helpers -------------------------------------
+
+(defn opts-from-env (default-database)
+  "Build Postgres connection opts from the standard $PG* env vars.
+  `default-database` is used when $PGDATABASE is not set."
+  {:host (or (getenv "PGHOST") "127.0.0.1")
+   :port (string->number (or (getenv "PGPORT") "5432"))
+   :user (or (getenv "PGUSER") "postgres")
+   :password (or (getenv "PGPASSWORD") "postgres")
+   :database (or (getenv "PGDATABASE") default-database)
+   :size 5})
+
+(defn create-database (opts)
+  "Create the database named in `opts` if it does not already exist.
+  Opens a one-connection admin repo against the `postgres` system database,
+  creates the target DB if absent, then closes the admin connection."
+  (let (dbname (get opts :database)
+        admin (repo/open (adaptor) (assoc opts :database "postgres" :size 1))
+        exists (not (empty? (repo/exec admin
+                    "SELECT 1 FROM pg_database WHERE datname = $1" [dbname]))))
+    (if exists
+      (println (str "Database '" dbname "' already exists."))
+      (do
+        (println (str "Creating database '" dbname "'..."))
+        (repo/exec admin (str "CREATE DATABASE " dbname) [])
+        (println "Created.")))
+    (repo/close admin)))
 
 ;; ---- low-level single-connection API (re-exported for direct use) -----------
 
