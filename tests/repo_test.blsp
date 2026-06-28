@@ -150,4 +150,23 @@
         (is (= (sort (map (fn (t) (get t :name)) (get (first ps) :tags)))
               (list "elixir" "lisp")))
         (is (= (get (first (get (second ps) :tags)) :name) "sql")))
+      (repo/close r)))
+
+  (test "migration diffing: create absent, ADD new fields, DROP opt-in"
+    (let (r (repo/open (pg/adaptor) (opts))
+          v1 {:table :acct :primary-key :id :fields {:id :integer :name :text}}
+          v2 {:table :acct :primary-key :id
+              :fields {:id :integer :name :text :balance :numeric}})
+      (repo/exec r "create temp table acct (id int primary key, name text, gone text)" [])
+      ;; existing table → diff sees the extra live column
+      (let (d (repo/diff r v1))
+        (is (nil? (get d :create)))
+        (is (= (get d :drop) [:gone])))
+      ;; migrate to v2: ADD balance (no drop by default)
+      (repo/migrate r v2)
+      (let (cols (repo/columns r v2))
+        (is (= (sort (map name cols)) (list "balance" "gone" "id" "name"))))
+      ;; opt in to dropping the column gone from the schema
+      (repo/migrate r v2 {:drop true})
+      (is (= (sort (map name (repo/columns r v2))) (list "balance" "id" "name")))
       (repo/close r))))
