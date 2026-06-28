@@ -10,15 +10,22 @@
   (:alias conn))
 
 (defn adaptor ()
-  "The store adaptor contract, backed by the pooled Postgres driver:
+  "The store adaptor contract, backed by the pooled Postgres driver. Each query
+  returns rows as maps keyed by column name (the shape every adaptor returns):
     :start-pool (opts)         -> pool   ; opts: :host :port :user :password :database :size
     :stop-pool  (pool)         -> :ok
-    :exec       (pool sql ps)  -> {:columns [name…] :rows [[val…]…]}   ; parameterized ($1…)
-    :query      (pool sql)     -> {:columns … :rows …}                 ; no params"
+    :exec       (pool sql ps)  -> [{:col val…}…]   ; parameterized ($1…)
+    :query      (pool sql)     -> [{:col val…}…]   ; no params"
   {:start-pool (fn (opts) (pool/start opts))
    :stop-pool  (fn (p) (pool/stop p))
-   :exec       (fn (p sql params) (pool/exec p sql params))
-   :query      (fn (p sql) (pool/query p sql))})
+   :exec       (fn (p sql params) (rows->maps (pool/exec p sql params)))
+   :query      (fn (p sql) (rows->maps (pool/query p sql)))})
+
+(defn rows->maps (result)
+  "Turn the driver's positional `{:columns :rows}` into a list of `{:col value…}`
+  maps — the adaptor-contract row shape."
+  (let (cols (map keyword (get result :columns)))
+    (map (fn (row) (zipmap cols row)) (get result :rows))))
 
 ;; ---- low-level single-connection API (re-exported for direct use) -----------
 
