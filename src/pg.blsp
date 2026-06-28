@@ -7,6 +7,7 @@
   `wire/*`, `conn`, `connection`, `pool` modules). A different database is just a
   different package implementing the same contract."
   (:alias pool)
+  (:alias connection)
   (:alias conn))
 
 (defn adaptor ()
@@ -19,7 +20,20 @@
   {:start-pool (fn (opts) (pool/start opts))
    :stop-pool  (fn (p) (pool/stop p))
    :exec       (fn (p sql params) (rows->maps (pool/exec p sql params)))
-   :query      (fn (p sql) (rows->maps (pool/query p sql)))})
+   :query      (fn (p sql) (rows->maps (pool/query p sql)))
+   :transaction (fn (p f) (run-transaction p f))})
+
+(defn run-transaction (pool f)
+  "Run `f` (which takes a tx-exec `(sql params) -> rows`) inside BEGIN/COMMIT on a
+  single checked-out connection; ROLLBACK + re-raise on a throw."
+  (pool/with-conn pool
+    (fn (pid)
+      (let (run (fn (sql params) (rows->maps (pool/unwrap (connection/exec pid sql params)))))
+        (run "BEGIN" [])
+        (let (outcome (try {:ok (f run)} (catch e {:err e})))
+          (if (get outcome :err)
+            (do (run "ROLLBACK" []) (throw (get outcome :err)))
+            (do (run "COMMIT" []) (get outcome :ok))))))))
 
 (defn rows->maps (result)
   "Turn the driver's positional `{:columns :rows}` into a list of `{:col value…}`
