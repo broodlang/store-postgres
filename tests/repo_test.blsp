@@ -95,4 +95,59 @@
                  (repo/all r (-> (query/from :posts) (query/order-by :id))) :author))
         (is (= (get (get (first ps) :author) :name) "ada"))
         (is (= (get (get (nth ps 2) :author) :name) "grace")))
+      (repo/close r)))
+
+  (test "nested preload {:posts :comments} loads two levels"
+    (let (r (repo/open (pg/adaptor) (opts))
+          comment {:table :comments :primary-key :id
+                   :fields {:id :integer :post_id :integer :body :text}}
+          post {:table :posts :primary-key :id
+                :fields {:id :integer :author_id :integer :title :text}
+                :associations {:comments {:type :has-many :table :comments :fk :post_id
+                                          :schema (fn () comment)}}}
+          users {:table :users :primary-key :id :fields {:id :integer :name :text}
+                 :associations {:posts {:type :has-many :table :posts :fk :author_id
+                                        :schema (fn () post)}}})
+      (repo/exec r "create temp table users (id int primary key, name text)" [])
+      (repo/exec r "create temp table posts (id int primary key, author_id int, title text)" [])
+      (repo/exec r "create temp table comments (id int primary key, post_id int, body text)" [])
+      (repo/insert r :users {:id 1 :name "ada"})
+      (repo/insert r :posts {:id 10 :author_id 1 :title "a1"})
+      (repo/insert r :posts {:id 11 :author_id 1 :title "a2"})
+      (repo/insert r :comments {:id 100 :post_id 10 :body "c1"})
+      (repo/insert r :comments {:id 101 :post_id 10 :body "c2"})
+      (repo/insert r :comments {:id 102 :post_id 11 :body "c3"})
+      (let (us (repo/preload r users
+                 (repo/all r (-> (query/from :users) (query/order-by :id)))
+                 {:posts :comments}))
+        (let (ps (get (first us) :posts))
+          (is (= (count ps) 2))
+          (is (= (count (get (first ps) :comments)) 2))
+          (is (= (count (get (second ps) :comments)) 1))))
+      (repo/close r)))
+
+  (test "many-to-many preload via a join table (two queries)"
+    (let (r (repo/open (pg/adaptor) (opts))
+          tag {:table :tags :primary-key :id :fields {:id :integer :name :text}}
+          post {:table :posts :primary-key :id
+                :fields {:id :integer :title :text}
+                :associations {:tags {:type :many-to-many :table :tags :join-table :post_tags
+                                      :join-keys [:post_id :tag_id] :references :id
+                                      :schema (fn () tag)}}})
+      (repo/exec r "create temp table posts (id int primary key, title text)" [])
+      (repo/exec r "create temp table tags (id int primary key, name text)" [])
+      (repo/exec r "create temp table post_tags (post_id int, tag_id int)" [])
+      (repo/insert r :posts {:id 10 :title "a1"})
+      (repo/insert r :posts {:id 11 :title "a2"})
+      (repo/insert r :tags {:id 1 :name "elixir"})
+      (repo/insert r :tags {:id 2 :name "lisp"})
+      (repo/insert r :tags {:id 3 :name "sql"})
+      (repo/exec r "insert into post_tags values (10,1),(10,2),(11,3)" [])
+      (let (ps (repo/preload r post
+                 (repo/all r (-> (query/from :posts) (query/order-by :id))) :tags))
+        (is (= (count (get (first ps) :tags)) 2))
+        (is (= (count (get (second ps) :tags)) 1))
+        (is (= (sort (map (fn (t) (get t :name)) (get (first ps) :tags)))
+              (list "elixir" "lisp")))
+        (is (= (get (first (get (second ps) :tags)) :name) "sql")))
       (repo/close r))))
