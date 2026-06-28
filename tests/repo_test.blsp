@@ -71,4 +71,28 @@
                       (catch _ [:caught])))
             :caught))
       (is (= (get (repo/one r (-> (query/from :acct) (query/where [:= :id 1]))) :bal) 90))
+      (repo/close r)))
+
+  (test "associations: has-many / belongs-to preload (one query each)"
+    (let (r (repo/open (pg/adaptor) (opts))
+          users {:table :users :primary-key :id :fields {:id :integer :name :text}
+                 :associations {:posts {:type :has-many :table :posts :fk :author_id}}}
+          posts {:table :posts :primary-key :id
+                 :fields {:id :integer :author_id :integer :title :text}
+                 :associations {:author {:type :belongs-to :table :users :fk :author_id :references :id}}})
+      (repo/exec r "create temp table users (id int primary key, name text)" [])
+      (repo/exec r "create temp table posts (id int primary key, author_id int, title text)" [])
+      (repo/insert r :users {:id 1 :name "ada"})
+      (repo/insert r :users {:id 2 :name "grace"})
+      (repo/insert r :posts {:id 10 :author_id 1 :title "a1"})
+      (repo/insert r :posts {:id 11 :author_id 1 :title "a2"})
+      (repo/insert r :posts {:id 12 :author_id 2 :title "g1"})
+      (let (us (repo/preload r users
+                 (repo/all r (-> (query/from :users) (query/order-by :id))) :posts))
+        (is (= (count (get (first us) :posts)) 2))
+        (is (= (count (get (second us) :posts)) 1)))
+      (let (ps (repo/preload r posts
+                 (repo/all r (-> (query/from :posts) (query/order-by :id))) :author))
+        (is (= (get (get (first ps) :author) :name) "ada"))
+        (is (= (get (get (nth ps 2) :author) :name) "grace")))
       (repo/close r))))
