@@ -1,7 +1,7 @@
-(defmodule main
+(defmodule pg/spike
   "Spike runner: connect to Postgres, authenticate (SCRAM-SHA-256 / md5 / cleartext),
   and run a couple of simple queries — proving the wire driver end to end against a
-  real server. Connection settings come from the standard PG* environment variables."
+  real server. Run with `nest run --main pg/spike`. Connection settings from $PG* env."
   (:alias conn)
   (:alias pool))
 
