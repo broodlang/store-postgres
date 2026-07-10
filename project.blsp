@@ -8,4 +8,4 @@
 (project
   :name "store-postgres"
   :version "0.1.0"
-  :dependencies [[store :path "../store"]])
+  :dependencies [[store :git "https://github.com/broodlang/store.git" :ref "main"]])
