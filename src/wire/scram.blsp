@@ -23,6 +23,7 @@
   "Begin SCRAM: build client-first. `nonce` is the caller's random client nonce."
   (let (bare (str "n=" user ",r=" nonce))
     {:password password
+     :nonce nonce
      :bare bare
      :first (str "n,," bare)}))
 
@@ -47,6 +48,12 @@
   Returns the state extended with `:final` (client-final text) and `:server-sig`."
   (let (parts (string-split server-first ",")
         rnonce (attr parts "r")
+        ;; RFC 5802 §5.1: the server nonce must extend our client nonce. Bail if it
+        ;; doesn't — a server (or MITM) that can't echo our nonce isn't the one we spoke to.
+        _ (if (and rnonce (string-prefix? rnonce (get state :nonce)))
+            nil
+            (throw {:store-error :auth
+                    :message "store: scram: server nonce does not extend client nonce"}))
         salt (base64-decode-bytes (attr parts "s"))
         iters (string->number (attr parts "i"))
         salted (pbkdf2 (get state :password) salt iters 32)
