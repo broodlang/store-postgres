@@ -1,0 +1,136 @@
+;; Stress / regression tests for the Postgres wire driver. Deliberately exercises the
+;; paths the ADR-141 byte-string→`bytes` send fix had to get right (see conn/send-message
+;; and wire/bytes/carrier->bytes):
+;;
+;;   - outbound message lengths across the Int32-length-prefix byte boundaries: 128
+;;     (low byte first crosses 0x80), 256, 16384 — the class of query that first tripped
+;;     the bug (a migration's information_schema probe was simply the first one long enough);
+;;   - high bytes (>= 0x80) in the SQL text AND in bound params (a multibyte char, or the
+;;     length prefix itself, is exactly what got UTF-8 double-encoded);
+;;   - large result sets spanning many inbound TCP segments;
+;;   - sustained sequential round-trips staying in frame-sync;
+;;   - concurrent load across a multi-connection pool.
+;;
+;; Requires a reachable Postgres (PG* env, default postgres/postgres @ 127.0.0.1:5432).
+(defmodule stress-test
+  (:use test)
+  (:alias repo)
+  (:alias pg))
+
+(defn opts ()
+  {:host (or (getenv "PGHOST") "127.0.0.1")
+   :port (string->number (or (getenv "PGPORT") "5432"))
+   :user (or (getenv "PGUSER") "postgres")
+   :password (or (getenv "PGPASSWORD") "postgres")
+   :database (or (getenv "PGDATABASE") "postgres")
+   :size 1})
+
+(defn rep (unit n)
+  "A string of `unit` repeated `n` times."
+  (apply str (map (fn (_) unit) (range n))))
+
+(defn value-of (rows key)
+  "The `key` field of the single returned row-map (repo/exec yields a list of maps)."
+  (get (first rows) key))
+
+;; ---- outbound message-length boundaries -------------------------------------
+
+(describe "outbound message length across the Int32-length-prefix byte boundaries"
+  :isolated
+  (test "a literal query crossing each boundary round-trips (simple protocol)"
+    (let (r (repo/open (pg/adaptor) (opts)))
+      ;; message length ≈ n + ~24; the sweep straddles 0x80 (128), 0x100 (256) and
+      ;; 0x4000 (16384) so every length byte that could be >= 0x80 is exercised.
+      (dolist (n (list 1 50 100 118 125 126 127 128 129 130 200 254 255 256 257
+                    500 1000 16360 16384 16400 40000))
+        (let (s (rep "x" n))
+          (is (= (value-of (repo/exec r (str "SELECT '" s "'::text AS v") []) :v) s))))
+      (repo/close r)))
+
+  (test "a bound text param crossing each boundary round-trips (extended protocol)"
+    (let (r (repo/open (pg/adaptor) (opts)))
+      (dolist (n (list 1 100 125 126 127 128 129 130 200 255 256 257 500 1000 16384 40000))
+        (let (s (rep "y" n))
+          (is (= (value-of (repo/exec r "SELECT $1::text AS v" [s]) :v) s))))
+      (repo/close r))))
+
+;; ---- high bytes (>= 0x80) survive verbatim ----------------------------------
+
+(describe "high bytes (>= 0x80) reach the wire and return byte-faithful"
+  :isolated
+  (test "a non-ASCII literal in the SQL text (simple protocol)"
+    (let (r (repo/open (pg/adaptor) (opts)))
+      (is (= (value-of (repo/exec r "SELECT 'café — 日本語 — 🌼'::text AS v" []) :v)
+            "café — 日本語 — 🌼"))
+      (repo/close r)))
+
+  (test "non-ASCII bound params (extended protocol), short and long"
+    (let (r (repo/open (pg/adaptor) (opts))
+          short "Ωραία — ñçüé — 日本語 — 🌼🚀"
+          ;; each unit is multibyte, so this is well past 128 bytes AND all high bytes —
+          ;; both hazards (length prefix >= 0x80 and body bytes >= 0x80) at once.
+          long (rep "é—🌼" 300))
+      (is (= (value-of (repo/exec r "SELECT $1::text AS v" [short]) :v) short))
+      (is (= (value-of (repo/exec r "SELECT $1::text AS v" [long]) :v) long))
+      (is (= (value-of (repo/exec r "SELECT char_length($1::text) AS n" [long]) :n) 900))
+      (repo/close r))))
+
+;; ---- large result sets span many inbound segments ---------------------------
+
+(describe "large result sets decode fully across TCP segments"
+  :isolated
+  ;; NOTE capped at 5k rows: the frame reader is currently O(rows²) — read-frame slices
+  ;; the whole remaining buffer per frame (conn.blsp `substring buf total …`), so 20k rows
+  ;; take ~50s while 5k take ~3s. Correctness is unaffected; this is a known scaling limit.
+  (test "a 5k-row result arrives complete and in order"
+    (let (r (repo/open (pg/adaptor) (opts))
+          rows (repo/exec r "SELECT generate_series(1,5000) AS n" []))
+      (is (= (count rows) 5000))
+      (is (= (get (first rows) :n) 1))
+      (is (= (get (nth rows 4999) :n) 5000))
+      (repo/close r)))
+
+  (test "wide rows: 50 rows each carrying a 10k-byte text value"
+    (let (r (repo/open (pg/adaptor) (opts))
+          rows (repo/exec r "SELECT repeat('ab', 5000) AS big FROM generate_series(1,50)" []))
+      (is (= (count rows) 50))
+      (is (= (string-length (get (first rows) :big)) 10000))
+      (is (= (string-length (get (nth rows 49) :big)) 10000))
+      (repo/close r))))
+
+;; ---- sustained round-trips stay in frame-sync -------------------------------
+
+(describe "sustained sequential round-trips stay in sync"
+  :isolated
+  (test "2000 parameterized queries on one connection each return the right value"
+    (let (r (repo/open (pg/adaptor) (opts))
+          all-ok (reduce (fn (acc i)
+                           (and acc (= (value-of (repo/exec r "SELECT $1::int AS n" [i]) :n) i)))
+                   true (range 2000)))
+      (is (= all-ok true))
+      (repo/close r))))
+
+;; ---- concurrent pool load ---------------------------------------------------
+
+(describe "concurrent load across a multi-connection pool"
+  :isolated
+  (test "40 workers × 15 queries over an 8-connection pool all return correct results"
+    (let (r (repo/open (pg/adaptor) (assoc (opts) :size 8))
+          parent (self)
+          workers 40
+          per-worker 15)
+      (dolist (w (range workers))
+        (spawn (fn ()
+                 (let (ok (reduce (fn (acc i)
+                                    ;; payload length varies 90..209, straddling the 128
+                                    ;; boundary while many connections send in parallel
+                                    (let (payload (str "w" w "i" i "-"
+                                                    (rep "z" (+ 90 (mod (* (+ w 1) (+ i 1)) 120)))))
+                                      (and acc (= (value-of (repo/exec r "SELECT $1::text AS v" [payload]) :v)
+                                                 payload))))
+                            true (range per-worker)))
+                   (send parent [:done ok])))))
+      (let (all-ok (reduce (fn (acc _) (and acc (receive ([:done ok] ok))))
+                     true (range workers)))
+        (is (= all-ok true)))
+      (repo/close r))))
