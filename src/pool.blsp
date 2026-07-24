@@ -11,7 +11,8 @@
     {:opts    connection opts, for (re)spawning
      :members all live connection pids
      :free    the subset currently available
-     :waiters FIFO [[from ref] …] awaiting a connection}"
+     :waiters an amortized-O(1) FIFO ({:in :out}, see below) of [from ref] pairs
+              awaiting a connection}"
   (:alias connection))
 
 ;; ---- lifecycle --------------------------------------------------------------
@@ -34,7 +35,7 @@
       (let (pids (get outcome :pids))
         (map monitor pids)
         (send parent [:started r])
-        (run {:opts opts :members pids :free pids :waiters []})))))
+        (run {:opts opts :members pids :free pids :waiters no-waiters})))))
 
 (defn open-parallel (opts n)
   "Open `n` connections concurrently — each connects in its own green process, so
@@ -59,7 +60,7 @@
     ([:checkout from r]
       (let (free (get state :free))
         (if (empty? free)
-          (run (assoc state :waiters (into (get state :waiters) [[from r]])))
+          (run (assoc state :waiters (waiters-push (get state :waiters) [from r])))
           (do
             (send from [:reply r (first free)])
             (run (assoc state :free (rest-v free)))))))
@@ -76,6 +77,29 @@
       (map connection/stop (get state :members))
       (send from [:reply r :ok]))))
 
+;; ---- waiters: an amortized-O(1) FIFO ----------------------------------------
+;; A plain vector made enqueue (`into … [w]`) and dequeue (`rest`) each O(waiters), so a
+;; thundering herd of N blocked checkouts churned O(N²). A two-list queue — push onto
+;; `:in`, pop from `:out`, flipping `:in` (reversed) into `:out` when `:out` drains — is
+;; amortized O(1) per op and keeps FIFO fairness, so no waiter starves under load.
+
+(def no-waiters {:in (list) :out (list)})
+
+(defn waiters-empty? (q)
+  (and (empty? (get q :in)) (empty? (get q :out))))
+
+(defn waiters-push (q w)
+  (assoc q :in (cons w (get q :in))))
+
+(defn waiters-pop (q)
+  "The next waiter (FIFO) and the queue without it, as `[w q']`. Assumes a non-empty
+  queue — callers gate on `waiters-empty?`."
+  (let (out (get q :out))
+    (if (empty? out)
+      (let (flipped (reverse (get q :in)))
+        [(first flipped) {:in (list) :out (rest flipped)}])
+      [(first out) (assoc q :out (rest out))])))
+
 ;; ---- state helpers ----------------------------------------------------------
 
 (defn rest-v (v) (into [] (rest v)))
@@ -90,12 +114,13 @@
 
 (defn give-back (state pid)
   "Return `pid` to circulation: hand it to the next waiter, else mark it free."
-  (let (waiters (get state :waiters))
-    (if (empty? waiters)
+  (let (q (get state :waiters))
+    (if (waiters-empty? q)
       (assoc state :free (into (get state :free) [pid]))
-      (let (w (first waiters))
+      (let (popped (waiters-pop q)
+            w (first popped))
         (send (get w 0) [:reply (get w 1) pid])
-        (assoc state :waiters (rest-v waiters))))))
+        (assoc state :waiters (get popped 1))))))
 
 (defn respawn (state)
   "Open a fresh connection, monitor it, and put it into circulation. If reconnect
