@@ -134,3 +134,23 @@
                      true (range workers)))
         (is (= all-ok true)))
       (repo/close r))))
+
+;; ---- pool checkout contention (the waiters FIFO) ----------------------------
+
+(describe "pool stays correct under heavy checkout contention"
+  :isolated
+  ;; 200 concurrent one-shot checkouts on a 3-connection pool means ~197 clients queued
+  ;; at once — exercising the waiters queue in bulk. The old vector queue made each
+  ;; enqueue/dequeue O(waiters) (O(N²) to drain the burst); the two-list FIFO is O(1)
+  ;; amortized and fair. Either way every client must get a working connection exactly once.
+  (test "200 concurrent checkouts on a 3-connection pool all complete correctly"
+    (let (r (repo/open (pg/adaptor) (assoc (opts) :size 3))
+          parent (self)
+          clients 200)
+      (dolist (c (range clients))
+        (spawn (fn ()
+                 (send parent [:done (= (value-of (repo/exec r "SELECT $1::int AS n" [c]) :n) c)]))))
+      (let (all-ok (reduce (fn (acc _) (and acc (receive ([:done ok] ok))))
+                     true (range clients)))
+        (is (= all-ok true)))
+      (repo/close r))))
