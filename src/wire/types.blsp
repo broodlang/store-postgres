@@ -52,8 +52,8 @@
   type it inferred at Parse."
   (if (nil? value)
     (int32-be 4294967295)  ; length -1 → SQL NULL
-    (let (bytes (utf8-bytestr (param->text value)))
-      (str (int32-be (string-length bytes)) bytes))))
+    (let (encoded (utf8-bytestr (param->text value)))
+      (str (int32-be (string-length encoded)) encoded))))
 
 (defn param->text (value)
   "Brood value → its Postgres text-format literal."
