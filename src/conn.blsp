@@ -46,6 +46,7 @@
                 :user (get opts :user)
                 :password (get opts :password)
                 :buf ""
+                :off 0
                 :params {}})))
 
 (defn handshake (conn)
@@ -119,7 +120,7 @@
   where `result` is `{:columns [name …] :rows [[value …] …]}` with values decoded to
   Brood types and NULL → nil."
   (send-message (get conn :sock) (query-message sql))
-  (collect conn {:columns [] :rows []} []))
+  (collect conn {:columns [] :rows (list)} []))
 
 (defn exec (conn sql params)
   "Run `sql` with bound `params` via the extended protocol — `$1`, `$2`, … are filled
@@ -132,7 +133,7 @@
       (describe-message "P" "")
       (execute-message "" 0)
       (sync-message)))
-  (collect conn {:columns [] :rows []} []))
+  (collect conn {:columns [] :rows (list)} []))
 
 (defn collect (conn acc cols)
   "Drive the result stream until ReadyForQuery, decoding each DataRow with the column
@@ -172,39 +173,56 @@
     (if (= (get f 0) "Z") conn (drain-to-ready conn))))
 
 (defn finalize (acc cols)
-  "Project the column descriptors down to names for the public result."
-  (assoc acc :columns (into [] (map (fn (c) (get c :name)) cols))))
+  "Project the column descriptors down to names and restore row order. Rows were
+  accumulated head-first (`add-row` conses — O(1) — rather than appending to a
+  fixed-length vector, which copies), so reverse once here into the public vector."
+  (assoc acc
+    :columns (into [] (map (fn (c) (get c :name)) cols))
+    :rows (into [] (reverse (get acc :rows)))))
 
 (defn add-row (acc cols body)
-  (assoc acc :rows (into (get acc :rows) [(decode-row body cols)])))
+  (assoc acc :rows (cons (decode-row body cols) (get acc :rows))))
 
 ;; ---- frame reassembly -------------------------------------------------------
+
+(defn buffered (conn)
+  "Unconsumed byte count in the conn's buffer (bytes from `:off` to the end)."
+  (- (string-length (get conn :buf)) (get conn :off)))
 
 (defn read-frame (conn)
   "Pull one complete backend message. Returns `[type body conn']` where `type` is
   the 1-char message type, `body` the message body (length field stripped), and
-  `conn'` the conn with the consumed bytes removed from its buffer."
+  `conn'` the conn with its read offset advanced past the consumed frame. Advancing a
+  plain `:off` (rather than re-slicing the tail each frame) is what keeps decoding a
+  large result O(rows) instead of O(rows²)."
   (let (conn (fill-to conn 5)
         buf (get conn :buf)
-        type (substring buf 0 1)
-        total (+ 1 (read-int32 buf 1))
+        off (get conn :off)
+        type (substring buf off (+ off 1))
+        total (+ 1 (read-int32 buf (+ off 1)))
         conn (fill-to conn total)
-        buf (get conn :buf))
+        ;; fill-to may have compacted the buffer, resetting :off — re-read both
+        buf (get conn :buf)
+        off (get conn :off))
     [type
-     (substring buf 5 total)
-     (assoc conn :buf (substring buf total (string-length buf)))]))
+     (substring buf (+ off 5) (+ off total))
+     (assoc conn :off (+ off total))]))
 
 (defn fill-to (conn n)
-  "Ensure the conn's buffer holds at least `n` bytes, blocking on the mailbox for
-  more socket chunks as needed."
-  (if (>= (string-length (get conn :buf)) n)
+  "Ensure at least `n` unconsumed bytes are buffered, blocking on the mailbox for more
+  socket chunks as needed. Compacts as it appends — the already-consumed prefix (up to
+  `:off`) is dropped, so the concat copies only the small unconsumed remainder plus the
+  new chunk, never the frames we've already moved past."
+  (if (>= (buffered conn) n)
     conn
     (let (sock (get conn :sock)
           more (receive
                  ([:tcp ~sock d] d)
                  ([:tcp-closed ~sock] (fail :connection "connection closed by server"))
-                 (after 15000 (fail :connection "timed out waiting for server"))))
-      (fill-to (assoc conn :buf (str (get conn :buf) (bytes->carrier more))) n))))
+                 (after 15000 (fail :connection "timed out waiting for server")))
+          buf (get conn :buf)
+          kept (substring buf (get conn :off) (string-length buf)))
+      (fill-to (assoc conn :buf (str kept (bytes->carrier more)) :off 0) n))))
 
 ;; ---- backend message decoders -----------------------------------------------
 
@@ -217,8 +235,9 @@
 (defn parse-row-description (body)
   "RowDescription ('T'): Int16 field count, then per field a name CString followed by
   18 bytes of metadata. We keep the name and the type OID (at offset name-end + 6),
-  returning `[{:name :type-oid} …]`."
-  (rd-fields body 2 (read-int16 body 0) []))
+  returning `[{:name :type-oid} …]`. Fields are consed head-first then reversed once, so
+  the scan is O(fields) rather than O(fields²)."
+  (into [] (reverse (rd-fields body 2 (read-int16 body 0) (list)))))
 
 (defn rd-fields (body off n acc)
   (if (= n 0)
@@ -226,24 +245,25 @@
     (let (r (read-cstring body off)
           name-end (get r 1))
       (rd-fields body (+ name-end 18) (- n 1)
-        (into acc [{:name (get r 0)
-                    :type-oid (read-int32 body (+ name-end 6))}])))))
+        (cons {:name (get r 0)
+               :type-oid (read-int32 body (+ name-end 6))} acc)))))
 
 (defn decode-row (body cols)
   "DataRow ('D'): Int16 column count, then per column an Int32 length (-1 = NULL) and
-  that many text bytes — decoded to a Brood value via the column's type OID."
-  (dr-cols body 2 (read-int16 body 0) cols 0 []))
+  that many text bytes — decoded to a Brood value via the column's type OID. Columns are
+  consed head-first then reversed once into the row vector, so a wide row is O(cols)."
+  (into [] (reverse (dr-cols body 2 (read-int16 body 0) cols 0 (list)))))
 
 (defn dr-cols (body off n cols idx acc)
   (if (= idx n)
     acc
     (let (len (read-int32 body off))
       (if (= len 4294967295)    ; -1 as unsigned → NULL
-        (dr-cols body (+ off 4) n cols (+ idx 1) (into acc [nil]))
+        (dr-cols body (+ off 4) n cols (+ idx 1) (cons nil acc))
         (let (oid (get (get cols idx) :type-oid)
               text (bytestr->utf8 (substring body (+ off 4) (+ off 4 len))))
           (dr-cols body (+ off 4 len) n cols (+ idx 1)
-            (into acc [(types/decode-value oid text)])))))))
+            (cons (types/decode-value oid text) acc)))))))
 
 (defn error-text (body)
   "ErrorResponse ('E'): a series of (type byte, value CString) ended by a zero byte.
