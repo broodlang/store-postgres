@@ -79,15 +79,15 @@
 
 (describe "large result sets decode fully across TCP segments"
   :isolated
-  ;; NOTE capped at 5k rows: the frame reader is currently O(rows²) — read-frame slices
-  ;; the whole remaining buffer per frame (conn.blsp `substring buf total …`), so 20k rows
-  ;; take ~50s while 5k take ~3s. Correctness is unaffected; this is a known scaling limit.
-  (test "a 5k-row result arrives complete and in order"
+  ;; 20k rows exercises the offset-based frame reader that keeps large-result decode
+  ;; O(rows): read-frame advances a `:off` cursor instead of re-slicing the buffer per
+  ;; frame, so this decodes in ~1.4s where the old O(rows²) reader took ~49s.
+  (test "a 20k-row result arrives complete and in order"
     (let (r (repo/open (pg/adaptor) (opts))
-          rows (repo/exec r "SELECT generate_series(1,5000) AS n" []))
-      (is (= (count rows) 5000))
+          rows (repo/exec r "SELECT generate_series(1,20000) AS n" []))
+      (is (= (count rows) 20000))
       (is (= (get (first rows) :n) 1))
-      (is (= (get (nth rows 4999) :n) 5000))
+      (is (= (get (nth rows 19999) :n) 20000))
       (repo/close r)))
 
   (test "wide rows: 50 rows each carrying a 10k-byte text value"
