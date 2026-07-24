@@ -5,7 +5,6 @@
   `[:tcp …]` chunks arrive in its mailbox). A pooled, gen-server-wrapped connection
   comes next. Backend messages are reassembled from raw chunks by `read-frame`,
   which buffers in the conn map and blocks on `receive` until a full frame is in."
-  (:use net/tcp)
   (:use hash)
   (:use crypto)
   (:use encoding)

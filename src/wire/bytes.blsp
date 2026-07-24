@@ -15,8 +15,7 @@
   Crypto/encoding now live in the stdlib's raw-byte layer (`hash/*-raw`,
   `crypto/pbkdf2` over byte vectors, `encoding/base64-*-bytes` / `hex-*-bytes`);
   this module is just the wire-format glue — the carrier, fixed-width ints, and
-  CStrings."
-  (:use encoding))
+  CStrings.")
 
 ;; ---- byte <-> codepoint -----------------------------------------------------
 
