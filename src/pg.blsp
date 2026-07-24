@@ -63,6 +63,18 @@
    :database (or (getenv "PGDATABASE") default-database)
    :size 5})
 
+(defn quote-identifier (name)
+  "Double-quote a Postgres identifier, doubling any embedded double-quote. `CREATE
+  DATABASE` (and DDL identifiers generally) can't be parameterized, so a database name
+  reaches the SQL text literally — quoting is what stops a crafted name from breaking out
+  of the statement."
+  (str "\""
+    (apply str (map (fn (i)
+                      (let (ch (substring name i (+ i 1)))
+                        (if (= ch "\"") "\"\"" ch)))
+                 (range (string-length name))))
+    "\""))
+
 (defn create-database (opts)
   "Create the database named in `opts` if it does not already exist.
   Opens a one-connection admin repo against the `postgres` system database,
@@ -75,7 +87,8 @@
       (println (str "Database '" dbname "' already exists."))
       (do
         (println (str "Creating database '" dbname "'..."))
-        (repo/exec admin (str "CREATE DATABASE " dbname) [])
+        ;; the existence probe binds dbname as a param (safe); the CREATE can't, so quote it
+        (repo/exec admin (str "CREATE DATABASE " (quote-identifier dbname)) [])
         (println "Created.")))
     (repo/close admin)))
 
