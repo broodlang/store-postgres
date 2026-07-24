@@ -1,0 +1,13 @@
+;; Pure-function tests for the pg adaptor helpers — no database needed.
+(defmodule pg-test
+  (:use test)
+  (:alias pg))
+
+(describe "quote-identifier guards the un-parameterizable CREATE DATABASE"
+  (test "a plain name is double-quoted"
+    (is (= (pg/quote-identifier "hatch_demo") "\"hatch_demo\"")))
+  (test "an embedded double-quote is doubled — the name can't break out of the quotes"
+    (is (= (pg/quote-identifier "a\"b") "\"a\"\"b\"")))
+  (test "an injection attempt is neutralised into one quoted identifier"
+    (is (= (pg/quote-identifier "x\"; DROP DATABASE y; --")
+          "\"x\"\"; DROP DATABASE y; --\""))))
