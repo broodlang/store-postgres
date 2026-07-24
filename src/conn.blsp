@@ -22,6 +22,16 @@
   `:auth` errors leave the connection usable / are config problems."
   (throw {:store-error kind :message (str "store: " message)}))
 
+;; ---- sending ----------------------------------------------------------------
+
+(defn send-message (sock message)
+  "Write an assembled wire byte-string to `sock` as a first-class `bytes` value, so
+  `tcp-send` emits it verbatim. Since ADR-141, `tcp-send` UTF-8-encodes a *string*
+  leaf — which would re-encode every wire byte ≥ 0x80 (a message's Int32 length prefix
+  once it reaches 128 bytes, or any high body byte) into two bytes and desync the
+  server. See wire/bytes/carrier->bytes."
+  (tcp-send sock (carrier->bytes message)))
+
 ;; ---- connect + handshake ----------------------------------------------------
 
 (defn connect (opts)
@@ -31,7 +41,7 @@
         port (get opts :port 5432)
         sock (tcp-connect host port))
     (tcp-set-binary sock true)
-    (tcp-send sock (startup-message (get opts :user) (get opts :database)))
+    (send-message sock (startup-message (get opts :user) (get opts :database)))
     (handshake {:sock sock
                 :user (get opts :user)
                 :password (get opts :password)
@@ -69,7 +79,7 @@
       else (fail :auth (str "unsupported auth method " subtype)))))
 
 (defn send-password (conn)
-  (tcp-send (get conn :sock) (password-message (get conn :password)))
+  (send-message (get conn :sock) (password-message (get conn :password)))
   (handshake conn))
 
 (defn send-md5 (conn salt)
@@ -77,19 +87,19 @@
   (let (inner (md5 (str (get conn :password) (get conn :user)))
         outer (md5-bytes (into [] (concat (string->utf8-bytes inner)
                                     (bytestr->bytes salt)))))
-    (tcp-send (get conn :sock) (password-message (str "md5" outer)))
+    (send-message (get conn :sock) (password-message (str "md5" outer)))
     (handshake conn)))
 
 (defn scram-begin (conn)
   (let (nonce (gen-nonce)
         st (scram/start (get conn :user) (get conn :password) nonce))
-    (tcp-send (get conn :sock) (sasl-initial "SCRAM-SHA-256" (get st :first)))
+    (send-message (get conn :sock) (sasl-initial "SCRAM-SHA-256" (get st :first)))
     (handshake (assoc conn :scram st))))
 
 (defn scram-continue (conn body)
   (let (server-first (bytestr->utf8 (substring body 4 (string-length body)))
         st (scram/continue (get conn :scram) server-first))
-    (tcp-send (get conn :sock) (sasl-response (get st :final)))
+    (send-message (get conn :sock) (sasl-response (get st :final)))
     (handshake (assoc conn :scram st))))
 
 (defn scram-finish (conn body)
@@ -108,7 +118,7 @@
   "Run `sql` via the simple query protocol (no parameters). Returns `[result conn']`
   where `result` is `{:columns [name …] :rows [[value …] …]}` with values decoded to
   Brood types and NULL → nil."
-  (tcp-send (get conn :sock) (query-message sql))
+  (send-message (get conn :sock) (query-message sql))
   (collect conn {:columns [] :rows []} []))
 
 (defn exec (conn sql params)
@@ -116,7 +126,7 @@
   from `params` (server-side, so values are never interpolated into SQL). One-shot:
   parses an unnamed statement, binds, describes the portal (to learn result types),
   executes, and syncs. Returns `[result conn']` like `query`."
-  (tcp-send (get conn :sock)
+  (send-message (get conn :sock)
     (str (parse-message "" sql)
       (bind-message "" "" params)
       (describe-message "P" "")
@@ -253,5 +263,5 @@
 
 (defn close (conn)
   "Send Terminate and close the socket."
-  (tcp-send (get conn :sock) (terminate-message))
+  (send-message (get conn :sock) (terminate-message))
   (tcp-close (get conn :sock)))

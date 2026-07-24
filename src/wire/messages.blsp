@@ -2,8 +2,9 @@
   "Frontend (client → server) message encoders for the Postgres v3 protocol.
 
   Every message but the startup packet is `Byte1 type · Int32 length · body`, where
-  the length counts itself but not the type byte. Each returns a *byte string* ready
-  for `tcp-send` on a binary-mode socket. Backend-message decoding lives in `conn`."
+  the length counts itself but not the type byte. Each returns a *byte string*; `conn`
+  hands it to `tcp-send` as a first-class `bytes` value (`carrier->bytes`, ADR-141).
+  Backend-message decoding lives in `conn`."
   (:use wire/bytes)
   (:alias wire/types))
 
