@@ -45,7 +45,7 @@
     (handshake {:sock sock
                 :user (get opts :user)
                 :password (get opts :password)
-                :buf ""
+                :buf #b""
                 :off 0
                 :params {}})))
 
@@ -73,7 +73,7 @@
     (cond
       (= subtype 0) (handshake conn)                 ; AuthenticationOk
       (= subtype 3) (send-password conn)             ; CleartextPassword
-      (= subtype 5) (send-md5 conn (substring body 4 8))
+      (= subtype 5) (send-md5 conn (subbytes body 4 8))
       (= subtype 10) (scram-begin conn)              ; SASL — we offer SCRAM-SHA-256
       (= subtype 11) (scram-continue conn body)      ; SASLContinue (server-first)
       (= subtype 12) (scram-finish conn body)        ; SASLFinal (server signature)
@@ -84,10 +84,11 @@
   (handshake conn))
 
 (defn send-md5 (conn salt)
-  "MD5: 'md5' ++ md5hex( md5hex(password ++ user) ++ salt-bytes )."
+  "MD5: 'md5' ++ md5hex( md5hex(password ++ user) ++ salt-bytes ). `salt` is the 4-byte
+  `bytes` slice from the AuthenticationMD5Password message."
   (let (inner (md5 (str (get conn :password) (get conn :user)))
         outer (md5-bytes (into [] (concat (string->utf8-bytes inner)
-                                    (bytestr->bytes salt)))))
+                                    (bytes->list salt)))))
     (send-message (get conn :sock) (password-message (str "md5" outer)))
     (handshake conn)))
 
@@ -98,13 +99,13 @@
     (handshake (assoc conn :scram st))))
 
 (defn scram-continue (conn body)
-  (let (server-first (bytestr->utf8 (substring body 4 (string-length body)))
+  (let (server-first (slice->utf8 body 4 (byte-length body))
         st (scram/continue (get conn :scram) server-first))
     (send-message (get conn :sock) (sasl-response (get st :final)))
     (handshake (assoc conn :scram st))))
 
 (defn scram-finish (conn body)
-  (let (server-final (bytestr->utf8 (substring body 4 (string-length body))))
+  (let (server-final (slice->utf8 body 4 (byte-length body)))
     (if (= (scram/finish (get conn :scram) server-final) :ok)
       (handshake conn)
       (fail :auth "SCRAM server verification failed"))))
@@ -187,32 +188,33 @@
 
 (defn buffered (conn)
   "Unconsumed byte count in the conn's buffer (bytes from `:off` to the end)."
-  (- (string-length (get conn :buf)) (get conn :off)))
+  (- (byte-length (get conn :buf)) (get conn :off)))
 
 (defn read-frame (conn)
   "Pull one complete backend message. Returns `[type body conn']` where `type` is
-  the 1-char message type, `body` the message body (length field stripped), and
-  `conn'` the conn with its read offset advanced past the consumed frame. Advancing a
-  plain `:off` (rather than re-slicing the tail each frame) is what keeps decoding a
-  large result O(rows) instead of O(rows²)."
+  the 1-char message type, `body` the message body (a `bytes` slice, length field
+  stripped), and `conn'` the conn with its read offset advanced past the consumed frame.
+  The buffer is a `bytes` value read in place: advancing a plain `:off` (rather than
+  re-slicing the tail each frame) keeps decoding a large result O(rows) not O(rows²)."
   (let (conn (fill-to conn 5)
         buf (get conn :buf)
         off (get conn :off)
-        type (substring buf off (+ off 1))
+        type (byte->char (byte-at buf off))
         total (+ 1 (read-int32 buf (+ off 1)))
         conn (fill-to conn total)
         ;; fill-to may have compacted the buffer, resetting :off — re-read both
         buf (get conn :buf)
         off (get conn :off))
     [type
-     (substring buf (+ off 5) (+ off total))
+     (subbytes buf (+ off 5) (+ off total))
      (assoc conn :off (+ off total))]))
 
 (defn fill-to (conn n)
   "Ensure at least `n` unconsumed bytes are buffered, blocking on the mailbox for more
-  socket chunks as needed. Compacts as it appends — the already-consumed prefix (up to
-  `:off`) is dropped, so the concat copies only the small unconsumed remainder plus the
-  new chunk, never the frames we've already moved past."
+  socket chunks as needed. The buffer is the `bytes` value `[:tcp …]` delivers, appended
+  verbatim (no Latin-1 carrier copy). Compacts as it appends — the already-consumed prefix
+  (up to `:off`) is dropped, so the concat copies only the small unconsumed remainder plus
+  the new chunk, never the frames we've already moved past."
   (if (>= (buffered conn) n)
     conn
     (let (sock (get conn :sock)
@@ -221,8 +223,8 @@
                  ([:tcp-closed ~sock] (fail :connection "connection closed by server"))
                  (after 15000 (fail :connection "timed out waiting for server")))
           buf (get conn :buf)
-          kept (substring buf (get conn :off) (string-length buf)))
-      (fill-to (assoc conn :buf (str kept (bytes->carrier more)) :off 0) n))))
+          kept (subbytes buf (get conn :off) (byte-length buf)))
+      (fill-to (assoc conn :buf (bytes-concat kept more) :off 0) n))))
 
 ;; ---- backend message decoders -----------------------------------------------
 
@@ -261,7 +263,7 @@
       (if (= len 4294967295)    ; -1 as unsigned → NULL
         (dr-cols body (+ off 4) n cols (+ idx 1) (cons nil acc))
         (let (oid (get (get cols idx) :type-oid)
-              text (bytestr->utf8 (substring body (+ off 4) (+ off 4 len))))
+              text (slice->utf8 body (+ off 4) (+ off 4 len)))
           (dr-cols body (+ off 4 len) n cols (+ idx 1)
             (cons (types/decode-value oid text) acc)))))))
 
@@ -275,7 +277,7 @@
 (defn error-fields (body off acc)
   (if (= (byte-at body off) 0)
     acc
-    (let (code (substring body off (+ off 1))
+    (let (code (byte->char (byte-at body off))
           r (read-cstring body (+ off 1)))
       (error-fields body (get r 1) (assoc acc code (get r 0))))))
 

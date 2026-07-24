@@ -1,14 +1,15 @@
 (defmodule wire/bytes
   "Byte-level toolkit for the Postgres wire protocol.
 
-  Brood strings are codepoint sequences; a socket in binary mode (`tcp-set-binary`)
-  carries one codepoint 0–255 per wire byte (the Latin-1 carrier). So we represent
-  wire data two ways and convert at the seams:
+  Wire data appears in a few representations, converted only at the seams:
 
-    - a *byte string*  — codepoints 0–255, the assembly form for wire messages;
-                         convert to a first-class `bytes` value with `carrier->bytes`
-                         before `tcp-send` (ADR-141), and from the `bytes` that
-                         `[:tcp …]` delivers with `bytes->carrier`;
+    - a *byte string*  — Brood codepoints 0–255, the convenient assembly form for
+                         OUTBOUND messages; `carrier->bytes` turns a finished message into
+                         a first-class `bytes` value for `tcp-send` (ADR-141);
+    - a *`bytes` value* — what binary-mode `[:tcp …]` delivers and what the INBOUND reader
+                         works over directly (`byte-at`/`subbytes`/`byte-length`) — no
+                         Latin-1 carrier copy, so a large result isn't re-materialised as a
+                         codepoint string;
     - a *byte vector*  — a vector of ints 0–255, what `crypto`/`hash` operate on.
 
   Crypto/encoding now live in the stdlib's raw-byte layer (`hash/*-raw`,
@@ -43,15 +44,17 @@
   (char-at *byte-table* n))
 
 (defn byte-at (s i)
-  "Byte value at index `i` of byte string `s`."
-  (char->int (char-at s i)))
+  "Byte value 0–255 at index `i` — of a `bytes` value (the inbound wire form, O(1) `get`)
+  or a byte-string (outbound assembly, a crypto salt). The int/CString readers below run
+  over either representation through this."
+  (if (bytes? s) (get s i) (char->int (char-at s i))))
 
 (defn bytes->bytestr (bv)
-  "Byte vector → byte string (one codepoint per byte). For `tcp-send`."
+  "Byte vector → byte string (one codepoint per byte). For outbound assembly."
   (apply str (map byte->char bv)))
 
 (defn bytestr->bytes (s)
-  "Byte string → byte vector of ints 0–255. For `crypto`/`hash`."
+  "Byte string → byte vector of ints 0–255. For `carrier->bytes` / `crypto`."
   (into [] (map (fn (i) (byte-at s i)) (range (string-length s)))))
 
 (defn utf8-bytestr (s)
@@ -62,19 +65,20 @@
   "Decode a byte string holding UTF-8 back into text."
   (utf8-bytes->string (bytestr->bytes s)))
 
-(defn bytes->carrier (b)
-  "Convert a `bytes` value (what binary-mode `[:tcp …]` now delivers) to this
-  module's Latin-1 byte-string carrier, so the existing string-based frame reader
-  keeps working. (A full bytes-native rewrite of the wire codec is a clean
-  follow-up; this keeps the driver working on the migrated runtime.)"
-  (apply str (map byte->char (bytes->list b))))
+(defn slice->utf8 (s start end)
+  "Decode the UTF-8 bytes in `s[start:end]` to text — `s` a `bytes` value (inbound reader)
+  or a byte-string (legacy). The inbound path never rebuilds the whole stream as a string;
+  it slices straight out of the `bytes` buffer."
+  (if (bytes? s)
+    (utf8-bytes->string (subbytes s start end))
+    (bytestr->utf8 (substring s start end))))
 
 (defn carrier->bytes (s)
-  "Convert this module's Latin-1 byte-string carrier to a first-class `bytes` value
-  for `tcp-send` — the outbound seam, inverse of `bytes->carrier`. Since ADR-141,
-  `tcp-send` UTF-8-encodes a *string* leaf: it would re-encode every carrier codepoint
-  ≥ 0x80 into two wire bytes, corrupting a message's Int32 length prefix (any message
-  ≥ 128 bytes) and any high body byte. A `bytes` value is written verbatim instead."
+  "Convert this module's Latin-1 byte-string carrier (outbound message assembly) to a
+  first-class `bytes` value for `tcp-send`. Since ADR-141, `tcp-send` UTF-8-encodes a
+  *string* leaf: it would re-encode every carrier codepoint ≥ 0x80 into two wire bytes,
+  corrupting a message's Int32 length prefix (any message ≥ 128 bytes) and any high body
+  byte. A `bytes` value is written verbatim instead."
   (bytes (bytestr->bytes s)))
 
 ;; ---- fixed-width big-endian integers ----------------------------------------
@@ -92,14 +96,16 @@
     (byte->char (bit-and n 255))))
 
 (defn read-int32 (s off)
-  "Read an unsigned 32-bit big-endian int at byte offset `off` of byte string `s`."
+  "Read an unsigned 32-bit big-endian int at byte offset `off` of `s` (a `bytes` value or
+  byte-string — see `byte-at`)."
   (+ (* (byte-at s off) 16777216)
     (* (byte-at s (+ off 1)) 65536)
     (* (byte-at s (+ off 2)) 256)
     (byte-at s (+ off 3))))
 
 (defn read-int16 (s off)
-  "Read an unsigned 16-bit big-endian int at byte offset `off` of byte string `s`."
+  "Read an unsigned 16-bit big-endian int at byte offset `off` of `s` (a `bytes` value or
+  byte-string — see `byte-at`)."
   (+ (* (byte-at s off) 256) (byte-at s (+ off 1))))
 
 ;; ---- C strings (NUL-terminated) ---------------------------------------------
@@ -115,7 +121,7 @@
 
 (defn read-cstring--scan (s start i)
   (if (= (byte-at s i) 0)
-    [(bytestr->utf8 (substring s start i)) (+ i 1)]
+    [(slice->utf8 s start i) (+ i 1)]
     (read-cstring--scan s start (+ i 1))))
 
 ;; ---- byte-vector XOR (SCRAM's client proof; no stdlib equivalent) -----------
