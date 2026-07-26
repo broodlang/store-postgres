@@ -25,8 +25,8 @@
         r (ref)
         pid (spawn (boot opts size parent r)))
     (receive
-      ([:started ~r] pid)
-      ([:start-failed ~r err] (throw err)))))
+      ([:started ^r] pid)
+      ([:start-failed ^r err] (throw err)))))
 
 (defn boot (opts size parent r)
   (let (outcome (try {:pids (open-parallel opts size)} (catch e {:error e})))
@@ -52,8 +52,8 @@
   (let (cr (get p :ref)
         pid (get p :pid))
     (receive
-      ([:started ~cr] pid)
-      ([:start-failed ~cr e] (throw e)))))
+      ([:started ^cr] pid)
+      ([:start-failed ^cr e] (throw e)))))
 
 (defn run (state)
   (receive
@@ -139,7 +139,7 @@
   "Block until a connection is available; return its pid."
   (let (r (ref))
     (send pool [:checkout (self) r])
-    (receive ([:reply ~r pid] pid))))
+    (receive ([:reply ^r pid] pid))))
 
 (defn checkin (pool pid)
   "Return a checked-out connection to the pool."
@@ -172,4 +172,4 @@
   "Stop the pool and all its connections."
   (let (r (ref))
     (send pool [:stop (self) r])
-    (receive ([:reply ~r v] v) (after 10000 :timeout))))
+    (receive ([:reply ^r v] v) (after 10000 :timeout))))

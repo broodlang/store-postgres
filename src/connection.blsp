@@ -20,8 +20,8 @@
         r (ref)
         pid (spawn (boot opts parent r)))
     (receive
-      ([:started ~r] pid)
-      ([:start-failed ~r err] (throw err)))))
+      ([:started ^r] pid)
+      ([:start-failed ^r err] (throw err)))))
 
 (defn boot (opts parent r)
   (let (outcome (try {:conn (conn/connect opts)} (catch e {:error e})))
@@ -68,8 +68,8 @@
         m (monitor pid))
     (send pid (build r))
     (receive
-      ([:reply ~r v] (do (demonitor m) v))
-      ([:down ~m _ reason]
+      ([:reply ^r v] (do (demonitor m) v))
+      ([:down ^m _ reason]
         [:error {:store-error :connection
                  :message (str "store: connection process died: " reason)}]))))
 
