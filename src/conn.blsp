@@ -86,7 +86,7 @@
   "MD5: 'md5' ++ md5hex( md5hex(password ++ user) ++ salt-bytes ). `salt` is the 4-byte
   `bytes` slice from the AuthenticationMD5Password message."
   (let (inner (md5 (str (get conn :password) (get conn :user)))
-        outer (md5-bytes (into [] (concat (string->utf8-bytes inner)
+        outer (md5-bytes (into [] (append (string->utf8-bytes inner)
                                     (bytes->list salt)))))
     (send-message (get conn :sock) (password-message (str "md5" outer)))
     (handshake conn)))
@@ -212,14 +212,14 @@
   "Ensure at least `n` unconsumed bytes are buffered, blocking on the mailbox for more
   socket chunks as needed. The buffer is the `bytes` value `[:tcp …]` delivers, appended
   verbatim (no Latin-1 carrier copy). Compacts as it appends — the already-consumed prefix
-  (up to `:off`) is dropped, so the concat copies only the small unconsumed remainder plus
+  (up to `:off`) is dropped, so the append copies only the small unconsumed remainder plus
   the new chunk, never the frames we've already moved past."
   (if (>= (buffered conn) n)
     conn
     (let (sock (get conn :sock)
           more (receive
-                 ([:tcp ~sock d] d)
-                 ([:tcp-closed ~sock] (fail :connection "connection closed by server"))
+                 ([:tcp ^sock d] d)
+                 ([:tcp-closed ^sock] (fail :connection "connection closed by server"))
                  (after 15000 (fail :connection "timed out waiting for server")))
           buf (get conn :buf)
           kept (subbytes buf (get conn :off) (byte-length buf)))
