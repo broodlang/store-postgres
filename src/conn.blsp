@@ -217,7 +217,13 @@
           more (receive
                  ([:tcp ^sock d] d)
                  ([:tcp-closed ^sock] (fail :connection "connection closed by server"))
-                 (after 15000 (fail :connection "timed out waiting for server")))
+                 ;; A server that went silent — flag it `:timeout` so the pool does NOT
+                 ;; retry it (retrying only stacks more 15s waits); a closed socket above
+                 ;; is the retryable case.
+                 (after 15000
+                   (throw {:store-error :connection
+                           :timeout true
+                           :message "store: timed out waiting for server"})))
           buf (get conn :buf)
           kept (subbytes buf (get conn :off) (byte-length buf)))
       (fill-to (assoc conn :buf (bytes-concat kept more) :off 0) n))))
