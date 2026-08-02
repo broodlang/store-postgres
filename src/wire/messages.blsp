@@ -9,7 +9,6 @@
   (:alias wire/types))
 
 (def *protocol-version* 196608) ; 3.0, encoded as 0x00030000
-
 (defn framed (type body)
   "Wrap `body` in a typed message: type byte, Int32 self-inclusive length, body."
   (str type (int32-be (+ 4 (string-length body))) body))
@@ -17,9 +16,9 @@
 (defn startup-message (user database)
   "StartupMessage (no type byte): protocol version then NUL-terminated key/value
   parameter pairs, ended by a final zero byte."
-  (let (params (str (cstring "user") (cstring user)
-                 (if (nil? database) "" (str (cstring "database") (cstring database)))
-                 "\x00")
+  (let (params (str (cstring "user")
+                 (cstring user)
+                 (if (nil? database) "" (str (cstring "database") (cstring database))) "\x00")
         body (str (int32-be *protocol-version*) params))
     (str (int32-be (+ 4 (string-length body))) body)))
 
@@ -57,12 +56,10 @@
   parameter-format-code-count of 0 (⇒ all params text), the parameter values, and a
   result-format-code-count of 0 (⇒ all results text)."
   (framed "B"
-    (str (cstring portal) (cstring statement)
-      (int16-be 0)                                  ; param format codes: 0 ⇒ all text
-      (int16-be (count params))
-      (apply str (map types/encode-param params))
-      (int16-be 0))))                               ; result format codes: 0 ⇒ all text
-
+    (str (cstring portal)
+      (cstring statement)
+      (int16-be 0) ; param format codes: 0 ⇒ all text
+      (int16-be (count params)) (apply str (map types/encode-param params)) (int16-be 0)))) ; result format codes: 0 ⇒ all text
 (defn describe-message (kind name)
   "Describe ('D'): `kind` is \"S\" (statement) or \"P\" (portal). Describing a portal
   makes the server send a RowDescription so we learn the result column type OIDs."

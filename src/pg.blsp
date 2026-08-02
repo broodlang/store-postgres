@@ -19,19 +19,19 @@
     :exec       (pool sql ps)  -> [{:col val…}…]   ; parameterized ($1…)
     :query      (pool sql)     -> [{:col val…}…]   ; no params"
   {:start-pool (fn (opts) (pool/start opts))
-   :stop-pool  (fn (p) (pool/stop p))
-   :exec       (fn (p sql params) (rows->maps (pool/exec p sql params)))
-   :query      (fn (p sql) (rows->maps (pool/query p sql)))
+   :stop-pool (fn (p) (pool/stop p))
+   :exec (fn (p sql params) (rows->maps (pool/exec p sql params)))
+   :query (fn (p sql) (rows->maps (pool/query p sql)))
    :transaction (fn (p f) (run-transaction p f))
-   :columns    (fn (p table) (pg-columns p table))})
+   :columns (fn (p table) (pg-columns p table))})
 
 (defn pg-columns (pool table)
   "Live columns of `table` as `[{:name <string> :type <string>}…]` (empty if the
   table doesn't exist) — the introspection store needs for migration diffing."
   (rows->maps (pool/exec pool
-    (str "SELECT column_name AS name, data_type AS type FROM information_schema.columns"
-      " WHERE table_name = $1 ORDER BY ordinal_position")
-    [table])))
+                (str "SELECT column_name AS name, data_type AS type FROM information_schema.columns"
+                  " WHERE table_name = $1 ORDER BY ordinal_position")
+                [table])))
 
 (defn run-transaction (pool f)
   "Run `f` (which takes a tx-exec `(sql params) -> rows`) inside BEGIN/COMMIT on a
@@ -69,10 +69,11 @@
   reaches the SQL text literally — quoting is what stops a crafted name from breaking out
   of the statement."
   (str "\""
-    (apply str (map (fn (i)
-                      (let (ch (substring name i (+ i 1)))
-                        (if (= ch "\"") "\"\"" ch)))
-                 (range (string-length name))))
+    (apply str
+      (map (fn (i)
+             (let (ch (substring name i (+ i 1)))
+               (if (= ch "\"") "\"\"" ch)))
+        (range (string-length name))))
     "\""))
 
 (defn create-database (opts)
@@ -82,7 +83,7 @@
   (let (dbname (get opts :database)
         admin (repo/open (adaptor) (assoc opts :database "postgres" :size 1))
         exists (not (empty? (repo/exec admin
-                    "SELECT 1 FROM pg_database WHERE datname = $1" [dbname]))))
+                              "SELECT 1 FROM pg_database WHERE datname = $1" [dbname]))))
     (if exists
       (println (str "Database '" dbname "' already exists."))
       (do

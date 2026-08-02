@@ -11,6 +11,13 @@
   it (the pool) can replace it."
   (:alias conn))
 
+;; How long a connection may sit idle before we send a keepalive `SELECT 1`. Managed
+;; Postgres proxies (Fly's haproxy/flycast, PgBouncer, cloud load balancers) close
+;; idle client connections — often at ~30–60s — and a parked connection wouldn't
+;; notice until its next real query failed. Pinging under that window keeps the socket
+;; alive, so the pool doesn't churn and requests after an idle period don't fail.
+(def *idle-keepalive-ms* 15000)
+
 ;; ---- lifecycle --------------------------------------------------------------
 
 (defn start (opts)
@@ -35,9 +42,20 @@
   (receive
     ([:query from r sql] (handle from r (fn () (conn/query c sql))))
     ([:exec from r sql params] (handle from r (fn () (conn/exec c sql params))))
-    ([:stop from r]
-      (conn/close c)
-      (send from [:reply r :ok]))))
+    ([:stop from r] (conn/close c)
+      (send from [:reply r :ok]))
+    ;; Idle too long — keep the socket alive so a proxy doesn't close it out from
+    ;; under us (see *idle-keepalive-ms*).
+    (after *idle-keepalive-ms* (keepalive c))))
+
+(defn keepalive (c)
+  "Run a lightweight `SELECT 1` to keep an idle connection alive, then keep serving on
+  the returned conn. If the socket is already dead, re-throw so the pool replaces us —
+  the same failure path as a query on a dead connection."
+  (let (outcome (try {:ok (conn/query c "SELECT 1")} (catch e {:err e})))
+    (if (get outcome :ok)
+      (serve-loop (get (get outcome :ok) 1))
+      (throw (get outcome :err)))))
 
 (defn handle (from r thunk)
   "Run a query/exec `thunk` (returns `[result conn']`), reply `[:ok result]`, and
@@ -46,18 +64,15 @@
   is reported and then re-thrown, killing the process."
   (let (outcome (try {:ok (thunk)} (catch e {:err e})))
     (cond
-      (get outcome :ok)
-        (let (res (get outcome :ok))
-          (send from [:reply r [:ok (get res 0)]])
-          (serve-loop (get res 1)))
-      (= (get (get outcome :err) :store-error) :query)
-        (let (err (get outcome :err))
-          (send from [:reply r [:error err]])
-          (serve-loop (get err :conn)))
-      else
-        (let (err (get outcome :err))
-          (send from [:reply r [:error err]])
-          (throw err)))))
+      (get outcome :ok) (let (res (get outcome :ok))
+                          (send from [:reply r [:ok (get res 0)]])
+                          (serve-loop (get res 1)))
+      (= (get (get outcome :err) :store-error) :query) (let (err (get outcome :err))
+                                                         (send from [:reply r [:error err]])
+                                                         (serve-loop (get err :conn)))
+      else (let (err (get outcome :err))
+             (send from [:reply r [:error err]])
+             (throw err)))))
 
 ;; ---- client API (returns [:ok result] | [:error err]) -----------------------
 
@@ -69,9 +84,8 @@
     (send pid (build r))
     (receive
       ([:reply ^r v] (do (demonitor m) v))
-      ([:down ^m _ reason]
-        [:error {:store-error :connection
-                 :message (str "store: connection process died: " reason)}]))))
+      ([:down ^m _ reason] [:error {:store-error :connection
+                                    :message (str "store: connection process died: " reason)}]))))
 
 (defn query (pid sql)
   "Run `sql` (no params) on connection process `pid`."

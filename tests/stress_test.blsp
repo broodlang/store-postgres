@@ -41,8 +41,9 @@
     (let (r (repo/open (pg/adaptor) (opts)))
       ;; message length ≈ n + ~24; the sweep straddles 0x80 (128), 0x100 (256) and
       ;; 0x4000 (16384) so every length byte that could be >= 0x80 is exercised.
-      (dolist (n (list 1 50 100 118 125 126 127 128 129 130 200 254 255 256 257
-                    500 1000 16360 16384 16400 40000))
+      (dolist (n (list 1
+                   50 100 118 125 126 127 128 129 130 200 254 255 256 257 500 1000 16360 16384 16400
+                   40000))
         (let (s (rep "x" n))
           (is (= (value-of (repo/exec r (str "SELECT '" s "'::text AS v") []) :v) s))))
       (repo/close r)))
@@ -120,16 +121,19 @@
           workers 40
           per-worker 15)
       (dolist (w (range workers))
-        (spawn (fn ()
-                 (let (ok (reduce (fn (acc i)
-                                    ;; payload length varies 90..209, straddling the 128
-                                    ;; boundary while many connections send in parallel
-                                    (let (payload (str "w" w "i" i "-"
-                                                    (rep "z" (+ 90 (mod (* (+ w 1) (+ i 1)) 120)))))
-                                      (and acc (= (value-of (repo/exec r "SELECT $1::text AS v" [payload]) :v)
-                                                 payload))))
-                            true (range per-worker)))
-                   (send parent [:done ok])))))
+        (spawn
+          (fn ()
+            (let (ok (reduce
+                       (fn (acc i)
+                         ;; payload length varies 90..209, straddling the 128
+                         ;; boundary while many connections send in parallel
+                         (let (payload (str "w"
+                                         w "i" i "-" (rep "z" (+ 90 (mod (* (+ w 1) (+ i 1)) 120)))))
+                           (and acc
+                             (= (value-of (repo/exec r "SELECT $1::text AS v" [payload]) :v)
+                               payload))))
+                       true (range per-worker)))
+              (send parent [:done ok])))))
       (let (all-ok (reduce (fn (acc _) (and acc (receive ([:done ok] ok))))
                      true (range workers)))
         (is (= all-ok true)))

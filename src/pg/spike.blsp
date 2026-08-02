@@ -53,10 +53,9 @@
     (println "6 concurrent jobs through 3 connections (backend pid shows reuse):")
     (let (parent (self))
       (map (fn (i)
-             (spawn
-               (let (res (pool/query p
-                           (str "select " i " as job, pg_backend_pid() as backend")))
-                 (send parent [:done (get res :rows)]))))
+             (spawn (let (res (pool/query p
+                                (str "select " i " as job, pg_backend_pid() as backend")))
+                      (send parent [:done (get res :rows)]))))
         (range 6))
       (map (fn (_) (receive ([:done rows] (println "  ->" rows)))) (range 6)))
 
@@ -65,7 +64,7 @@
     (let (victim (pool/checkout p))
       (println "  killing" victim)
       (exit victim :killed)
-      (pool/checkin p victim))   ; returning the dead pid — the pool ignores it
+      (pool/checkin p victim)) ; returning the dead pid — the pool ignores it
     (map (fn (i)
            (println "  post-kill query" i ":" (get (pool/query p "select 'ok' as state") :rows)))
       (range 4))
@@ -76,8 +75,8 @@
 
 (defn main ()
   (let (o (opts))
-    (println (str "Connecting to " (get o :user) "@" (get o :host) ":"
-               (get o :port) "/" (get o :database) " …"))
+    (println (str "Connecting to "
+               (get o :user) "@" (get o :host) ":" (get o :port) "/" (get o :database) " …"))
     (let (c (conn/connect o))
       (println "Connected. server_version =" (get (get c :params) "server_version"))
       (let (c (run-query c "select version()")

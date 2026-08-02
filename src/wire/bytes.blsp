@@ -86,8 +86,7 @@
   "Non-negative `n` → 4-byte big-endian byte string (Postgres Int32)."
   (str (byte->char (bit-and (bit-shift-right n 24) 255))
     (byte->char (bit-and (bit-shift-right n 16) 255))
-    (byte->char (bit-and (bit-shift-right n 8) 255))
-    (byte->char (bit-and n 255))))
+    (byte->char (bit-and (bit-shift-right n 8) 255)) (byte->char (bit-and n 255))))
 
 (defn int16-be (n)
   "Non-negative `n` → 2-byte big-endian byte string (Postgres Int16)."
@@ -98,9 +97,7 @@
   "Read an unsigned 32-bit big-endian int at byte offset `off` of `s` (a `bytes` value or
   byte-string — see `byte-at`)."
   (+ (* (byte-at s off) 16777216)
-    (* (byte-at s (+ off 1)) 65536)
-    (* (byte-at s (+ off 2)) 256)
-    (byte-at s (+ off 3))))
+    (* (byte-at s (+ off 1)) 65536) (* (byte-at s (+ off 2)) 256) (byte-at s (+ off 3))))
 
 (defn read-int16 (s off)
   "Read an unsigned 16-bit big-endian int at byte offset `off` of `s` (a `bytes` value or

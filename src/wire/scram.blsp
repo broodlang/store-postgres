@@ -35,8 +35,8 @@
 (defn attr--find (parts prefix)
   (cond
     (empty? parts) nil
-    (string-prefix? (first parts) prefix)
-      (substring (first parts) (string-length prefix) (string-length (first parts)))
+    (string-prefix? (first parts) prefix) (substring (first parts)
+                                            (string-length prefix) (string-length (first parts)))
     else (attr--find (rest parts) prefix)))
 
 (defn string-prefix? (s prefix)
