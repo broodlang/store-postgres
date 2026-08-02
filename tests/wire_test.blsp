@@ -50,6 +50,7 @@
 
   (test "a server nonce that doesn't extend the client nonce is rejected (RFC 5802 §5.1)"
     (let (st (start "user" "pencil" *client-nonce*))
-      (is (= (first (try (continue st "r=zzzznonce,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096")
+      (is (= (first (try
+                      (continue st "r=zzzznonce,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096")
                       (catch e [:threw])))
             :threw)))))

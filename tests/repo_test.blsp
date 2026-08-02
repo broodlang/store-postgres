@@ -20,11 +20,12 @@
   (test "all returns rows as maps; where/order compile and run"
     (let (r (repo/open (pg/adaptor) (opts)))
       (repo/exec r "create temp table t (id int, name text, amount numeric)" [])
-      (repo/exec r "insert into t values ($1,$2,$3),($4,$5,$6),($7,$8,$9)"
+      (repo/exec r
+        "insert into t values ($1,$2,$3),($4,$5,$6),($7,$8,$9)"
         [1 "ada" "9.99" 2 "grace" "100.50" 3 "alan" "0.01"])
-      (let (rows (repo/all r (-> (query/from :t)
-                               (query/where [:> :id 1])
-                               (query/order-by :id))))
+      (let (rows (repo/all r
+                   (-> (query/from :t)
+                     (query/where [:> :id 1]) (query/order-by :id))))
         (is (= (count rows) 2))
         (is (= (get (first rows) :name) "grace"))
         (is (= (get (first rows) :id) 2))
@@ -34,10 +35,9 @@
         (is (= (get one :id) 3))
         (is (= (get one :amount) 0.01M)))
       ;; in / projection
-      (let (names (repo/all r (-> (query/from :t)
-                                (query/select [:name])
-                                (query/where [:in :id [1 3]])
-                                (query/order-by :id))))
+      (let (names (repo/all r
+                    (-> (query/from :t)
+                      (query/select [:name]) (query/where [:in :id [1 3]]) (query/order-by :id))))
         (is (= (map (fn (m) (get m :name)) names) (list "ada" "alan"))))
       (repo/close r)))
 
@@ -60,14 +60,17 @@
       (repo/exec r "create temp table acct (id int, bal int)" [])
       (repo/insert r :acct {:id 1 :bal 100})
       ;; success → committed
-      (repo/transaction r (fn (tx)
-                            (repo/update tx :acct {:bal 90} [:= :id 1])
-                            (repo/insert tx :acct {:id 2 :bal 10})))
+      (repo/transaction r
+        (fn (tx)
+          (repo/update tx :acct {:bal 90} [:= :id 1])
+          (repo/insert tx :acct {:id 2 :bal 10})))
       (is (= (count (repo/all r (query/from :acct))) 2))
       ;; throw → rolled back, and the error propagates
-      (is (= (first (try (repo/transaction r (fn (tx)
-                                               (repo/update tx :acct {:bal 0} [:= :id 1])
-                                               (throw "boom")))
+      (is (= (first (try
+                      (repo/transaction r
+                        (fn (tx)
+                          (repo/update tx :acct {:bal 0} [:= :id 1])
+                          (throw "boom")))
                       (catch _ [:caught])))
             :caught))
       (is (= (get (repo/one r (-> (query/from :acct) (query/where [:= :id 1]))) :bal) 90))
@@ -75,11 +78,17 @@
 
   (test "associations: has-many / belongs-to preload (one query each)"
     (let (r (repo/open (pg/adaptor) (opts))
-          users {:table :users :primary-key :id :fields {:id :integer :name :text}
+          users {:table :users
+                 :primary-key :id
+                 :fields {:id :integer :name :text}
                  :associations {:posts {:type :has-many :table :posts :fk :author_id}}}
-          posts {:table :posts :primary-key :id
+          posts {:table :posts
+                 :primary-key :id
                  :fields {:id :integer :author_id :integer :title :text}
-                 :associations {:author {:type :belongs-to :table :users :fk :author_id :references :id}}})
+                 :associations {:author {:type :belongs-to
+                                         :table :users
+                                         :fk :author_id
+                                         :references :id}}})
       (repo/exec r "create temp table users (id int primary key, name text)" [])
       (repo/exec r "create temp table posts (id int primary key, author_id int, title text)" [])
       (repo/insert r :users {:id 1 :name "ada"})
@@ -87,26 +96,34 @@
       (repo/insert r :posts {:id 10 :author_id 1 :title "a1"})
       (repo/insert r :posts {:id 11 :author_id 1 :title "a2"})
       (repo/insert r :posts {:id 12 :author_id 2 :title "g1"})
-      (let (us (repo/preload r users
-                 (repo/all r (-> (query/from :users) (query/order-by :id))) :posts))
+      (let (us (repo/preload r
+                 users (repo/all r (-> (query/from :users) (query/order-by :id))) :posts))
         (is (= (count (get (first us) :posts)) 2))
         (is (= (count (get (second us) :posts)) 1)))
-      (let (ps (repo/preload r posts
-                 (repo/all r (-> (query/from :posts) (query/order-by :id))) :author))
+      (let (ps (repo/preload r
+                 posts (repo/all r (-> (query/from :posts) (query/order-by :id))) :author))
         (is (= (get (get (first ps) :author) :name) "ada"))
         (is (= (get (get (nth ps 2) :author) :name) "grace")))
       (repo/close r)))
 
   (test "nested preload {:posts :comments} loads two levels"
     (let (r (repo/open (pg/adaptor) (opts))
-          comment {:table :comments :primary-key :id
+          comment {:table :comments
+                   :primary-key :id
                    :fields {:id :integer :post_id :integer :body :text}}
-          post {:table :posts :primary-key :id
+          post {:table :posts
+                :primary-key :id
                 :fields {:id :integer :author_id :integer :title :text}
-                :associations {:comments {:type :has-many :table :comments :fk :post_id
+                :associations {:comments {:type :has-many
+                                          :table :comments
+                                          :fk :post_id
                                           :schema (fn () comment)}}}
-          users {:table :users :primary-key :id :fields {:id :integer :name :text}
-                 :associations {:posts {:type :has-many :table :posts :fk :author_id
+          users {:table :users
+                 :primary-key :id
+                 :fields {:id :integer :name :text}
+                 :associations {:posts {:type :has-many
+                                        :table :posts
+                                        :fk :author_id
                                         :schema (fn () post)}}})
       (repo/exec r "create temp table users (id int primary key, name text)" [])
       (repo/exec r "create temp table posts (id int primary key, author_id int, title text)" [])
@@ -117,9 +134,8 @@
       (repo/insert r :comments {:id 100 :post_id 10 :body "c1"})
       (repo/insert r :comments {:id 101 :post_id 10 :body "c2"})
       (repo/insert r :comments {:id 102 :post_id 11 :body "c3"})
-      (let (us (repo/preload r users
-                 (repo/all r (-> (query/from :users) (query/order-by :id)))
-                 {:posts :comments}))
+      (let (us (repo/preload r
+                 users (repo/all r (-> (query/from :users) (query/order-by :id))) {:posts :comments}))
         (let (ps (get (first us) :posts))
           (is (= (count ps) 2))
           (is (= (count (get (first ps) :comments)) 2))
@@ -129,10 +145,14 @@
   (test "many-to-many preload via a join table (two queries)"
     (let (r (repo/open (pg/adaptor) (opts))
           tag {:table :tags :primary-key :id :fields {:id :integer :name :text}}
-          post {:table :posts :primary-key :id
+          post {:table :posts
+                :primary-key :id
                 :fields {:id :integer :title :text}
-                :associations {:tags {:type :many-to-many :table :tags :join-table :post_tags
-                                      :join-keys [:post_id :tag_id] :references :id
+                :associations {:tags {:type :many-to-many
+                                      :table :tags
+                                      :join-table :post_tags
+                                      :join-keys [:post_id :tag_id]
+                                      :references :id
                                       :schema (fn () tag)}}})
       (repo/exec r "create temp table posts (id int primary key, title text)" [])
       (repo/exec r "create temp table tags (id int primary key, name text)" [])
@@ -143,8 +163,8 @@
       (repo/insert r :tags {:id 2 :name "lisp"})
       (repo/insert r :tags {:id 3 :name "sql"})
       (repo/exec r "insert into post_tags values (10,1),(10,2),(11,3)" [])
-      (let (ps (repo/preload r post
-                 (repo/all r (-> (query/from :posts) (query/order-by :id))) :tags))
+      (let (ps (repo/preload r
+                 post (repo/all r (-> (query/from :posts) (query/order-by :id))) :tags))
         (is (= (count (get (first ps) :tags)) 2))
         (is (= (count (get (second ps) :tags)) 1))
         (is (= (sort (map (fn (t) (get t :name)) (get (first ps) :tags)))
@@ -155,7 +175,8 @@
   (test "migration diffing: create absent, ADD new fields, DROP opt-in"
     (let (r (repo/open (pg/adaptor) (opts))
           v1 {:table :acct :primary-key :id :fields {:id :integer :name :text}}
-          v2 {:table :acct :primary-key :id
+          v2 {:table :acct
+              :primary-key :id
               :fields {:id :integer :name :text :balance :numeric}})
       (repo/exec r "create temp table acct (id int primary key, name text, gone text)" [])
       ;; existing table → diff sees the extra live column

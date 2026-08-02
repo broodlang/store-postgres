@@ -42,10 +42,11 @@
   the (PBKDF2-dominated) SCRAM handshakes overlap and startup is ~one handshake, not
   n of them. Spawn all, then collect each `[:started]`."
   (let (parent (self)
-        pairs (into [] (map (fn (i)
-                              (let (cr (ref))
-                                {:ref cr :pid (spawn (connection/boot opts parent cr))}))
-                         (range n))))
+        pairs (into []
+                (map (fn (i)
+                       (let (cr (ref))
+                         {:ref cr :pid (spawn (connection/boot opts parent cr))}))
+                  (range n))))
     (into [] (map await-started pairs))))
 
 (defn await-started (p)
@@ -57,13 +58,12 @@
 
 (defn run (state)
   (receive
-    ([:checkout from r]
-      (let (free (get state :free))
-        (if (empty? free)
-          (run (assoc state :waiters (waiters-push (get state :waiters) [from r])))
-          (do
-            (send from [:reply r (first free)])
-            (run (assoc state :free (rest-v free)))))))
+    ([:checkout from r] (let (free (get state :free))
+                          (if (empty? free)
+                            (run (assoc state :waiters (waiters-push (get state :waiters) [from r])))
+                            (do
+                              (send from [:reply r (first free)])
+                              (run (assoc state :free (rest-v free)))))))
     ([:checkin pid]
       ;; accept only a live member that isn't already free (ignore dead/double checkin)
       (if (and (includes? (get state :members) pid)
@@ -73,8 +73,7 @@
     ([:down m pid reason]
       ;; a connection died — drop it and bring up a replacement
       (run (respawn (remove-conn state pid))))
-    ([:stop from r]
-      (map connection/stop (get state :members))
+    ([:stop from r] (map connection/stop (get state :members))
       (send from [:reply r :ok]))))
 
 ;; ---- waiters: an amortized-O(1) FIFO ----------------------------------------
@@ -155,13 +154,38 @@
       (catch e
         (do (checkin pool pid) (throw e))))))
 
+;; A checked-out connection can be dead through no fault of the caller — a proxy
+;; closed it while it sat in the pool (keepalive narrows but can't fully close this
+;; race). Such a failure surfaces as a `:connection` store-error and the pool respawns
+;; the dead member; retrying picks up a fresh one, so a transient close is invisible to
+;; the caller. A genuine query error (`:query`) is NOT retried.
+(def *max-attempts* 3)
+
 (defn query (pool sql)
-  "Run `sql` on a pooled connection. Returns the result map, or throws on error."
-  (unwrap (with-conn pool (fn (pid) (connection/query pid sql)))))
+  "Run `sql` on a pooled connection, retrying a dead-connection failure. Returns the
+  result, or throws on a genuine error."
+  (with-retry pool (fn (pid) (connection/query pid sql)) *max-attempts*))
 
 (defn exec (pool sql params)
-  "Run parameterized `sql` with `params` on a pooled connection."
-  (unwrap (with-conn pool (fn (pid) (connection/exec pid sql params)))))
+  "Run parameterized `sql` with `params` on a pooled connection, retrying a
+  dead-connection failure."
+  (with-retry pool (fn (pid) (connection/exec pid sql params)) *max-attempts*))
+
+(defn with-retry (pool f attempts)
+  (let (tagged (with-conn pool (fn (pid) (f pid))))
+    (cond
+      (= (get tagged 0) :ok) (get tagged 1)
+      (and (> attempts 1) (connection-error? (get tagged 1))) (do
+                                                                (pause 50)
+                                                                (with-retry pool f (- attempts 1)))
+      else (throw (get tagged 1)))))
+
+(defn connection-error? (err)
+  (and (map? err) (= (get err :store-error) :connection)))
+
+(defn pause (ms)
+  "Sleep `ms` — a short backoff so the pool can respawn the dead member before retry."
+  (receive (after ms nil)))
 
 (defn unwrap (tagged)
   (if (= (get tagged 0) :ok)

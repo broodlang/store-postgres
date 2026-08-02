@@ -50,12 +50,12 @@
     (let (p (pool/start (assoc (opts) :size 2))
           parent (self))
       (map (fn (i)
-             (spawn
-               (send parent [:r (one-int (pool/query p (str "select " i " as n")))])))
+             (spawn (send parent [:r (one-int (pool/query p (str "select " i " as n")))])))
         (range 6))
-      (let (results (into [] (map (fn (_)
-                                    (receive ([:r v] v) (after 30000 :timeout)))
-                               (range 6))))
+      (let (results (into []
+                      (map (fn (_)
+                             (receive ([:r v] v) (after 30000 :timeout)))
+                        (range 6))))
         (is (= (count results) 6))
         (is (not (includes? results :timeout))))
       (pool/stop p)))
@@ -63,7 +63,7 @@
     (let (p (pool/start (assoc (opts) :size 2))
           victim (pool/checkout p))
       (exit victim :killed)
-      (pool/checkin p victim)      ; dead pid — pool ignores it
+      (pool/checkin p victim) ; dead pid — pool ignores it
       ;; the pool still serves (other conn + respawn)
       (is (= (one-int (pool/query p "select 5")) 5))
       (is (= (one-int (pool/query p "select 6")) 6))

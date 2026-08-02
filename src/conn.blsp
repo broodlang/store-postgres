@@ -58,9 +58,9 @@
     (cond
       (= type "R") (handle-auth conn body)
       (= type "S") (handshake (record-param conn body))
-      (= type "K") (handshake conn)   ; BackendKeyData — for cancellation; ignore here
-      (= type "N") (handshake conn)   ; NoticeResponse
-      (= type "Z") conn               ; ReadyForQuery — handshake complete
+      (= type "K") (handshake conn) ; BackendKeyData — for cancellation; ignore here
+      (= type "N") (handshake conn) ; NoticeResponse
+      (= type "Z") conn ; ReadyForQuery — handshake complete
       (= type "E") (fail :auth (error-text body))
       else (handshake conn))))
 
@@ -70,12 +70,12 @@
   "Dispatch on the Authentication sub-type (Int32 at the head of an 'R' message)."
   (let (subtype (read-int32 body 0))
     (cond
-      (= subtype 0) (handshake conn)                 ; AuthenticationOk
-      (= subtype 3) (send-password conn)             ; CleartextPassword
+      (= subtype 0) (handshake conn) ; AuthenticationOk
+      (= subtype 3) (send-password conn) ; CleartextPassword
       (= subtype 5) (send-md5 conn (subbytes body 4 8))
-      (= subtype 10) (scram-begin conn)              ; SASL — we offer SCRAM-SHA-256
-      (= subtype 11) (scram-continue conn body)      ; SASLContinue (server-first)
-      (= subtype 12) (scram-finish conn body)        ; SASLFinal (server signature)
+      (= subtype 10) (scram-begin conn) ; SASL — we offer SCRAM-SHA-256
+      (= subtype 11) (scram-continue conn body) ; SASLContinue (server-first)
+      (= subtype 12) (scram-finish conn body) ; SASLFinal (server signature)
       else (fail :auth (str "unsupported auth method " subtype)))))
 
 (defn send-password (conn)
@@ -86,8 +86,9 @@
   "MD5: 'md5' ++ md5hex( md5hex(password ++ user) ++ salt-bytes ). `salt` is the 4-byte
   `bytes` slice from the AuthenticationMD5Password message."
   (let (inner (md5 (str (get conn :password) (get conn :user)))
-        outer (md5-bytes (into [] (append (string->utf8-bytes inner)
-                                    (bytes->list salt)))))
+        outer (md5-bytes (into []
+                           (append (string->utf8-bytes inner)
+                             (bytes->list salt)))))
     (send-message (get conn :sock) (password-message (str "md5" outer)))
     (handshake conn)))
 
@@ -129,10 +130,7 @@
   executes, and syncs. Returns `[result conn']` like `query`."
   (send-message (get conn :sock)
     (str (parse-message "" sql)
-      (bind-message "" "" params)
-      (describe-message "P" "")
-      (execute-message "" 0)
-      (sync-message)))
+      (bind-message "" "" params) (describe-message "P" "") (execute-message "" 0) (sync-message)))
   (collect conn {:columns [] :rows (list)} []))
 
 (defn collect (conn acc cols)
@@ -146,17 +144,17 @@
     (cond
       (= type "T") (collect conn acc (parse-row-description body))
       (= type "D") (collect conn (add-row acc cols body) cols)
-      (= type "C") (collect conn acc cols)       ; CommandComplete
-      (= type "Z") [(finalize acc cols) conn]    ; ReadyForQuery — done
+      (= type "C") (collect conn acc cols) ; CommandComplete
+      (= type "Z") [(finalize acc cols) conn] ; ReadyForQuery — done
       (= type "E") (collect-error conn body cols)
-      (= type "1") (collect conn acc cols)       ; ParseComplete
-      (= type "2") (collect conn acc cols)       ; BindComplete
-      (= type "3") (collect conn acc cols)       ; CloseComplete
-      (= type "t") (collect conn acc cols)       ; ParameterDescription
-      (= type "n") (collect conn acc cols)       ; NoData
-      (= type "s") (collect conn acc cols)       ; PortalSuspended
-      (= type "N") (collect conn acc cols)       ; NoticeResponse
-      (= type "S") (collect conn acc cols)       ; ParameterStatus mid-stream
+      (= type "1") (collect conn acc cols) ; ParseComplete
+      (= type "2") (collect conn acc cols) ; BindComplete
+      (= type "3") (collect conn acc cols) ; CloseComplete
+      (= type "t") (collect conn acc cols) ; ParameterDescription
+      (= type "n") (collect conn acc cols) ; NoData
+      (= type "s") (collect conn acc cols) ; PortalSuspended
+      (= type "N") (collect conn acc cols) ; NoticeResponse
+      (= type "S") (collect conn acc cols) ; ParameterStatus mid-stream
       else (collect conn acc cols))))
 
 (defn collect-error (conn body cols)
@@ -204,9 +202,8 @@
         ;; fill-to may have compacted the buffer, resetting :off — re-read both
         buf (get conn :buf)
         off (get conn :off))
-    [type
-     (subbytes buf (+ off 5) (+ off total))
-     (assoc conn :off (+ off total))]))
+    [type (subbytes buf (+ off 5) (+ off total))
+      (assoc conn :off (+ off total))]))
 
 (defn fill-to (conn n)
   "Ensure at least `n` unconsumed bytes are buffered, blocking on the mailbox for more
@@ -245,9 +242,11 @@
     acc
     (let (r (read-cstring body off)
           name-end (get r 1))
-      (rd-fields body (+ name-end 18) (- n 1)
+      (rd-fields body
+        (+ name-end 18) (- n 1)
         (cons {:name (get r 0)
-               :type-oid (read-int32 body (+ name-end 6))} acc)))))
+               :type-oid (read-int32 body (+ name-end 6))}
+          acc)))))
 
 (defn decode-row (body cols)
   "DataRow ('D'): Int16 column count, then per column an Int32 length (-1 = NULL) and
@@ -259,19 +258,20 @@
   (if (= idx n)
     acc
     (let (len (read-int32 body off))
-      (if (= len 4294967295)    ; -1 as unsigned → NULL
+      (if (= len 4294967295)
+        ; -1 as unsigned → NULL
         (dr-cols body (+ off 4) n cols (+ idx 1) (cons nil acc))
         (let (oid (get (get cols idx) :type-oid)
               text (slice->utf8 body (+ off 4) (+ off 4 len)))
-          (dr-cols body (+ off 4 len) n cols (+ idx 1)
-            (cons (types/decode-value oid text) acc)))))))
+          (dr-cols body
+            (+ off 4 len) n cols (+ idx 1) (cons (types/decode-value oid text) acc)))))))
 
 (defn error-text (body)
   "ErrorResponse ('E'): a series of (type byte, value CString) ended by a zero byte.
   Render the severity, message, and SQLSTATE."
   (let (fields (error-fields body 0 {}))
-    (str (get fields "S" "ERROR") ": " (get fields "M" "(no message)")
-      (if (get fields "C") (str " [" (get fields "C") "]") ""))))
+    (str (get fields "S" "ERROR")
+      ": " (get fields "M" "(no message)") (if (get fields "C") (str " [" (get fields "C") "]") ""))))
 
 (defn error-fields (body off acc)
   (if (= (byte-at body off) 0)
