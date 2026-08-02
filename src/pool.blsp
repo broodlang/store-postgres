@@ -175,10 +175,16 @@
   (let (tagged (with-conn pool (fn (pid) (f pid))))
     (cond
       (= (get tagged 0) :ok) (get tagged 1)
-      (and (> attempts 1) (connection-error? (get tagged 1))) (do
-                                                                (pause 50)
-                                                                (with-retry pool f (- attempts 1)))
+      (and (> attempts 1) (retryable? (get tagged 1))) (do
+                                                         (pause 50)
+                                                         (with-retry pool f (- attempts 1)))
       else (throw (get tagged 1)))))
+
+(defn retryable? (err)
+  "A dead/closed connection is worth retrying with a fresh one; a `:timeout` (the
+  server went silent) is NOT — retrying only stacks more 15s waits and can blow the
+  caller's request deadline. Fail fast instead."
+  (and (connection-error? err) (not (get err :timeout))))
 
 (defn connection-error? (err)
   (and (map? err) (= (get err :store-error) :connection)))
