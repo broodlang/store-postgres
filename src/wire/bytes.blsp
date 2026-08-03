@@ -67,7 +67,7 @@
 
 (defn bytestr->utf8 (s)
   "Decode a byte string holding UTF-8 back into text."
-  (utf8-bytes->string (bytestr->bytes s)))
+  (utf8-bytes->string (bytes (bytestr->bytes s))))
 
 (defn slice->utf8 (s start end)
   "Decode the UTF-8 bytes in `s[start:end]` to text — `s` a `bytes` value (inbound reader)
