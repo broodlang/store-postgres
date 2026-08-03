@@ -47,13 +47,21 @@
 ;; ---- encode: Brood value -> wire param --------------------------------------
 
 (defn encode-param (value)
-  "Encode one bound parameter as a Bind wire fragment: Int32 length + UTF-8 bytes,
-  or Int32 -1 for SQL NULL. Sent in text format, so the server casts per the column
-  type it inferred at Parse."
-  (if (nil? value)
-    (int32-be 4294967295) ; length -1 → SQL NULL
-    (let (encoded (utf8-bytestr (param->text value)))
-      (str (int32-be (string-length encoded)) encoded))))
+  "Encode one bound parameter as a Bind wire fragment: Int32 length + value bytes, or
+  Int32 -1 for SQL NULL. A `bytes` value is sent in BINARY format (its raw bytes, paired
+  with a format code of 1 in `bind-message`) — so a large `bytea` (a tarball) rides as its
+  own bytes with no `\\x`-hex doubling or per-parameter text re-encoding. Everything else is
+  text format, and the server casts per the column type it inferred at Parse."
+  (cond
+    (nil? value) (int32-be 4294967295) ; length -1 → SQL NULL
+    (bytes? value) (str (int32-be (byte-length value)) (bytes->bytestr value))
+    else (let (encoded (utf8-bytestr (param->text value)))
+           (str (int32-be (string-length encoded)) encoded))))
+
+(defn param-format-code (value)
+  "The Bind parameter format code for `value`: 1 (binary) for a `bytes` value, else 0
+  (text). Paired 1:1 with the params so the server reads each in the right format."
+  (if (bytes? value) (int16-be 1) (int16-be 0)))
 
 (defn param->text (value)
   "Brood value → its Postgres text-format literal."

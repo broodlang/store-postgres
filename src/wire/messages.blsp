@@ -52,13 +52,14 @@
   (framed "P" (str (cstring name) (cstring sql) (int16-be 0))))
 
 (defn bind-message (portal statement params)
-  "Bind ('B'): bind `params` into `statement`, producing `portal`. We send one
-  parameter-format-code-count of 0 (⇒ all params text), the parameter values, and a
-  result-format-code-count of 0 (⇒ all results text)."
+  "Bind ('B'): bind `params` into `statement`, producing `portal`. We send one parameter
+  format code per parameter (0 text / 1 binary — a `bytes` value goes binary so a large
+  `bytea` isn't hex-doubled), the parameter values, and a result-format-code-count of 0
+  (⇒ all results text)."
   (framed "B"
     (str (cstring portal)
       (cstring statement)
-      (int16-be 0) ; param format codes: 0 ⇒ all text
+      (int16-be (count params)) (apply str (map types/param-format-code params)) ; N format codes, one per param
       (int16-be (count params)) (apply str (map types/encode-param params)) (int16-be 0)))) ; result format codes: 0 ⇒ all text
 (defn describe-message (kind name)
   "Describe ('D'): `kind` is \"S\" (statement) or \"P\" (portal). Describing a portal
