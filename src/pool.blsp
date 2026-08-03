@@ -32,10 +32,26 @@
   (let (outcome (try {:pids (open-parallel opts size)} (catch e {:error e})))
     (if (get outcome :error)
       (send parent [:start-failed r (get outcome :error)])
-      (let (pids (get outcome :pids))
+      (let (pids (get outcome :pids)
+            pool (self))
         (map monitor pids)
+        ;; Self-heal: a ticker nudges the pool to replace any connections it couldn't
+        ;; respawn immediately (e.g. the DB was unreachable when they died), so the pool
+        ;; recovers on its own once the DB is back — no app restart (see `:replenish`).
+        (spawn (replenish-ticker pool))
         (send parent [:started r])
-        (run {:opts opts :members pids :free pids :waiters no-waiters})))))
+        (run {:opts opts :size size :members pids :free pids
+              :waiters no-waiters :borrowed {}})))))
+
+;; How often the pool retries reconnecting while below its target size.
+(def *replenish-ms* 5000)
+
+(defn replenish-ticker (pool)
+  "Send `pool` a `:replenish` nudge every *replenish-ms*. Runs as a child of the pool so
+  the retry cadence is independent of request traffic."
+  (receive (after *replenish-ms* :tick))
+  (send pool [:replenish])
+  (replenish-ticker pool))
 
 (defn open-parallel (opts n)
   "Open `n` connections concurrently — each connects in its own green process, so
@@ -61,9 +77,7 @@
     ([:checkout from r] (let (free (get state :free))
                           (if (empty? free)
                             (run (assoc state :waiters (waiters-push (get state :waiters) [from r])))
-                            (do
-                              (send from [:reply r (first free)])
-                              (run (assoc state :free (rest-v free)))))))
+                            (run (hand-out (assoc state :free (rest-v free)) (first free) from r)))))
     ([:checkin pid]
       ;; accept only a live member that isn't already free (ignore dead/double checkin)
       (if (and (includes? (get state :members) pid)
@@ -71,10 +85,42 @@
         (run (give-back state pid))
         (run state)))
     ([:down m pid reason]
-      ;; a connection died — drop it and bring up a replacement
-      (run (respawn (remove-conn state pid))))
+      (if (includes? (get state :members) pid)
+        ;; a connection died — drop it (clearing any borrow record) and respawn a replacement
+        (run (respawn (remove-conn (clear-borrow state pid) pid)))
+        ;; a BORROWER died holding a connection (e.g. a request handler hard-killed on
+        ;; timeout, which would otherwise leak the connection out of the pool forever) —
+        ;; reclaim its connection back into circulation.
+        (let (conn (conn-of-borrower (get state :borrowed) pid))
+          (if (nil? conn) (run state) (run (give-back state conn))))))
+    ;; Periodic self-heal: replace connections while below target size.
+    ([:replenish] (run (maybe-replenish state)))
     ([:stop from r] (map connection/stop (get state :members))
       (send from [:reply r :ok]))))
+
+(defn hand-out (state pid borrower r)
+  "Hand connection `pid` to `borrower`, recording the borrow and monitoring the borrower
+  so a connection is reclaimed if the borrower dies without checking in."
+  (let (mon (monitor borrower))
+    (send borrower [:reply r pid])
+    (assoc state :borrowed (assoc (get state :borrowed) pid {:by borrower :mon mon}))))
+
+(defn clear-borrow (state pid)
+  "Demonitor and drop connection `pid`'s borrow record (a no-op if it isn't borrowed)."
+  (let (b (get (get state :borrowed) pid)
+        _ (when b (demonitor (get b :mon))))
+    (assoc state :borrowed (dissoc (get state :borrowed) pid))))
+
+(defn conn-of-borrower (borrowed borrower)
+  "The connection pid `borrower` currently holds, or nil."
+  (fold (fn (acc k) (if (= (get (get borrowed k) :by) borrower) k acc)) nil (keys borrowed)))
+
+(defn maybe-replenish (state)
+  "If the pool is below its target size, try to open one connection back. A no-op when
+  full; when reconnect fails (DB still down) the next tick retries."
+  (if (< (count (get state :members)) (get state :size))
+    (respawn state)
+    state))
 
 ;; ---- waiters: an amortized-O(1) FIFO ----------------------------------------
 ;; A plain vector made enqueue (`into … [w]`) and dequeue (`rest`) each O(waiters), so a
@@ -112,14 +158,16 @@
     :free (remove-pid (get state :free) pid)))
 
 (defn give-back (state pid)
-  "Return `pid` to circulation: hand it to the next waiter, else mark it free."
-  (let (q (get state :waiters))
+  "Return `pid` to circulation: hand it to the next waiter, else mark it free. Clears the
+  outgoing borrow record (demonitor) first; a re-handout to a waiter re-monitors the new
+  borrower."
+  (let (state (clear-borrow state pid)
+        q (get state :waiters))
     (if (waiters-empty? q)
       (assoc state :free (into (get state :free) [pid]))
       (let (popped (waiters-pop q)
             w (first popped))
-        (send (get w 0) [:reply (get w 1) pid])
-        (assoc state :waiters (get popped 1))))))
+        (hand-out (assoc state :waiters (get popped 1)) pid (get w 0) (get w 1))))))
 
 (defn respawn (state)
   "Open a fresh connection, monitor it, and put it into circulation. If reconnect
