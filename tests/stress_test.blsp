@@ -107,7 +107,8 @@
     (let (r (repo/open (pg/adaptor) (opts))
           all-ok (reduce (fn (acc i)
                            (and acc (= (value-of (repo/exec r "SELECT $1::int AS n" [i]) :n) i)))
-                   true (range 2000)))
+                   true
+                   (range 2000)))
       (is (= all-ok true))
       (repo/close r))))
 
@@ -128,14 +129,20 @@
                          ;; payload length varies 90..209, straddling the 128
                          ;; boundary while many connections send in parallel
                          (let (payload (str "w"
-                                         w "i" i "-" (rep "z" (+ 90 (mod (* (+ w 1) (+ i 1)) 120)))))
+                                         w
+                                         "i"
+                                         i
+                                         "-"
+                                         (rep "z" (+ 90 (mod (* (+ w 1) (+ i 1)) 120)))))
                            (and acc
                              (= (value-of (repo/exec r "SELECT $1::text AS v" [payload]) :v)
                                payload))))
-                       true (range per-worker)))
+                       true
+                       (range per-worker)))
               (send parent [:done ok])))))
       (let (all-ok (reduce (fn (acc _) (and acc (receive ([:done ok] ok))))
-                     true (range workers)))
+                     true
+                     (range workers)))
         (is (= all-ok true)))
       (repo/close r))))
 
@@ -155,6 +162,7 @@
         (spawn (fn ()
                  (send parent [:done (= (value-of (repo/exec r "SELECT $1::int AS n" [c]) :n) c)]))))
       (let (all-ok (reduce (fn (acc _) (and acc (receive ([:done ok] ok))))
-                     true (range clients)))
+                     true
+                     (range clients)))
         (is (= all-ok true)))
       (repo/close r))))

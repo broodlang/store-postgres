@@ -18,7 +18,8 @@
   parameter pairs, ended by a final zero byte."
   (let (params (str (cstring "user")
                  (cstring user)
-                 (if (nil? database) "" (str (cstring "database") (cstring database))) "\x00")
+                 (if (nil? database) "" (str (cstring "database") (cstring database)))
+                 "\x00")
         body (str (int32-be *protocol-version*) params))
     (str (int32-be (+ 4 (string-length body))) body)))
 
@@ -59,8 +60,11 @@
   (framed "B"
     (str (cstring portal)
       (cstring statement)
-      (int16-be (count params)) (apply str (map types/param-format-code params)) ; N format codes, one per param
-      (int16-be (count params)) (apply str (map types/encode-param params)) (int16-be 0)))) ; result format codes: 0 ⇒ all text
+      (int16-be (count params))
+      (apply str (map types/param-format-code params)) ; N format codes, one per param
+      (int16-be (count params))
+      (apply str (map types/encode-param params))
+      (int16-be 0)))) ; result format codes: 0 ⇒ all text
 (defn describe-message (kind name)
   "Describe ('D'): `kind` is \"S\" (statement) or \"P\" (portal). Describing a portal
   makes the server send a RowDescription so we learn the result column type OIDs."
