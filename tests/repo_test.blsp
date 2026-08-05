@@ -25,7 +25,8 @@
         [1 "ada" "9.99" 2 "grace" "100.50" 3 "alan" "0.01"])
       (let (rows (repo/all r
                    (-> (query/from :t)
-                     (query/where [:> :id 1]) (query/order-by :id))))
+                     (query/where [:> :id 1])
+                     (query/order-by :id))))
         (is (= (count rows) 2))
         (is (= (get (first rows) :name) "grace"))
         (is (= (get (first rows) :id) 2))
@@ -37,7 +38,9 @@
       ;; in / projection
       (let (names (repo/all r
                     (-> (query/from :t)
-                      (query/select [:name]) (query/where [:in :id [1 3]]) (query/order-by :id))))
+                      (query/select [:name])
+                      (query/where [:in :id [1 3]])
+                      (query/order-by :id))))
         (is (= (map (fn (m) (get m :name)) names) (list "ada" "alan"))))
       (repo/close r)))
 
@@ -97,11 +100,15 @@
       (repo/insert r :posts {:id 11 :author_id 1 :title "a2"})
       (repo/insert r :posts {:id 12 :author_id 2 :title "g1"})
       (let (us (repo/preload r
-                 users (repo/all r (-> (query/from :users) (query/order-by :id))) :posts))
+                 users
+                 (repo/all r (-> (query/from :users) (query/order-by :id)))
+                 :posts))
         (is (= (count (get (first us) :posts)) 2))
         (is (= (count (get (second us) :posts)) 1)))
       (let (ps (repo/preload r
-                 posts (repo/all r (-> (query/from :posts) (query/order-by :id))) :author))
+                 posts
+                 (repo/all r (-> (query/from :posts) (query/order-by :id)))
+                 :author))
         (is (= (get (get (first ps) :author) :name) "ada"))
         (is (= (get (get (nth ps 2) :author) :name) "grace")))
       (repo/close r)))
@@ -135,7 +142,9 @@
       (repo/insert r :comments {:id 101 :post_id 10 :body "c2"})
       (repo/insert r :comments {:id 102 :post_id 11 :body "c3"})
       (let (us (repo/preload r
-                 users (repo/all r (-> (query/from :users) (query/order-by :id))) {:posts :comments}))
+                 users
+                 (repo/all r (-> (query/from :users) (query/order-by :id)))
+                 {:posts :comments}))
         (let (ps (get (first us) :posts))
           (is (= (count ps) 2))
           (is (= (count (get (first ps) :comments)) 2))
@@ -164,7 +173,9 @@
       (repo/insert r :tags {:id 3 :name "sql"})
       (repo/exec r "insert into post_tags values (10,1),(10,2),(11,3)" [])
       (let (ps (repo/preload r
-                 post (repo/all r (-> (query/from :posts) (query/order-by :id))) :tags))
+                 post
+                 (repo/all r (-> (query/from :posts) (query/order-by :id)))
+                 :tags))
         (is (= (count (get (first ps) :tags)) 2))
         (is (= (count (get (second ps) :tags)) 1))
         (is (= (sort (map (fn (t) (get t :name)) (get (first ps) :tags)))

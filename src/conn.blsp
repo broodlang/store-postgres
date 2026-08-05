@@ -130,7 +130,10 @@
   executes, and syncs. Returns `[result conn']` like `query`."
   (send-message (get conn :sock)
     (str (parse-message "" sql)
-      (bind-message "" "" params) (describe-message "P" "") (execute-message "" 0) (sync-message)))
+      (bind-message "" "" params)
+      (describe-message "P" "")
+      (execute-message "" 0)
+      (sync-message)))
   (collect conn {:columns [] :rows (list)} []))
 
 (defn collect (conn acc cols)
@@ -202,7 +205,8 @@
         ;; fill-to may have compacted the buffer, resetting :off — re-read both
         buf (get conn :buf)
         off (get conn :off))
-    [type (subbytes buf (+ off 5) (+ off total))
+    [type
+      (subbytes buf (+ off 5) (+ off total))
       (assoc conn :off (+ off total))]))
 
 (defn fill-to (conn n)
@@ -249,7 +253,8 @@
     (let (r (read-cstring body off)
           name-end (get r 1))
       (rd-fields body
-        (+ name-end 18) (- n 1)
+        (+ name-end 18)
+        (- n 1)
         (cons {:name (get r 0)
                :type-oid (read-int32 body (+ name-end 6))}
           acc)))))
@@ -270,14 +275,20 @@
         (let (oid (get (get cols idx) :type-oid)
               text (slice->utf8 body (+ off 4) (+ off 4 len)))
           (dr-cols body
-            (+ off 4 len) n cols (+ idx 1) (cons (types/decode-value oid text) acc)))))))
+            (+ off 4 len)
+            n
+            cols
+            (+ idx 1)
+            (cons (types/decode-value oid text) acc)))))))
 
 (defn error-text (body)
   "ErrorResponse ('E'): a series of (type byte, value CString) ended by a zero byte.
   Render the severity, message, and SQLSTATE."
   (let (fields (error-fields body 0 {}))
     (str (get fields "S" "ERROR")
-      ": " (get fields "M" "(no message)") (if (get fields "C") (str " [" (get fields "C") "]") ""))))
+      ": "
+      (get fields "M" "(no message)")
+      (if (get fields "C") (str " [" (get fields "C") "]") ""))))
 
 (defn error-fields (body off acc)
   (if (= (byte-at body off) 0)

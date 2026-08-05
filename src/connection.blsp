@@ -64,12 +64,14 @@
   is reported and then re-thrown, killing the process."
   (let (outcome (try {:ok (thunk)} (catch e {:err e})))
     (cond
-      (get outcome :ok) (let (res (get outcome :ok))
-                          (send from [:reply r [:ok (get res 0)]])
-                          (serve-loop (get res 1)))
-      (= (get (get outcome :err) :store-error) :query) (let (err (get outcome :err))
-                                                         (send from [:reply r [:error err]])
-                                                         (serve-loop (get err :conn)))
+      (get outcome :ok)
+        (let (res (get outcome :ok))
+          (send from [:reply r [:ok (get res 0)]])
+          (serve-loop (get res 1)))
+      (= (get (get outcome :err) :store-error) :query)
+        (let (err (get outcome :err))
+          (send from [:reply r [:error err]])
+          (serve-loop (get err :conn)))
       else (let (err (get outcome :err))
              (send from [:reply r [:error err]])
              (throw err)))))
@@ -84,8 +86,9 @@
     (send pid (build r))
     (receive
       ([:reply ^r v] (do (demonitor m) v))
-      ([:down ^m _ reason] [:error {:store-error :connection
-                                    :message (str "store: connection process died: " reason)}]))))
+      ([:down ^m _ reason] [:error
+                             {:store-error :connection
+                              :message (str "store: connection process died: " reason)}]))))
 
 (defn query (pid sql)
   "Run `sql` (no params) on connection process `pid`."

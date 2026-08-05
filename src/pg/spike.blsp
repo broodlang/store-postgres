@@ -76,7 +76,14 @@
 (defn main ()
   (let (o (opts))
     (println (str "Connecting to "
-               (get o :user) "@" (get o :host) ":" (get o :port) "/" (get o :database) " …"))
+               (get o :user)
+               "@"
+               (get o :host)
+               ":"
+               (get o :port)
+               "/"
+               (get o :database)
+               " …"))
     (let (c (conn/connect o))
       (println "Connected. server_version =" (get (get c :params) "server_version"))
       (let (c (run-query c "select version()")
@@ -87,7 +94,8 @@
             c (run-exec c "select $1::int + $2::int as sum" [40 2])
             c (run-exec c "select $1 as greeting, $2::bool as flag" ["hello, $params" true])
             c (run-exec c
-                "select n, n * $1::int as scaled from generate_series(1,3) as n" [10])
+                "select n, n * $1::int as scaled from generate_series(1,3) as n"
+                [10])
             ;; injection attempt is just data, not SQL
             c (run-exec c "select $1 as raw" ["'; drop table users; --"]))
         (conn/close c)

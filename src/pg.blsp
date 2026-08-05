@@ -83,7 +83,8 @@
   (let (dbname (get opts :database)
         admin (repo/open (adaptor) (assoc opts :database "postgres" :size 1))
         exists (not (empty? (repo/exec admin
-                              "SELECT 1 FROM pg_database WHERE datname = $1" [dbname]))))
+                              "SELECT 1 FROM pg_database WHERE datname = $1"
+                              [dbname]))))
     (if exists
       (println (str "Database '" dbname "' already exists."))
       (do

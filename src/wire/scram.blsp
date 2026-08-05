@@ -30,14 +30,17 @@
 (defn attr (parts key)
   "Pull attribute `key` (e.g. \"r\") from comma-split `key=value` parts."
   (let (prefix (str key "="))
-    (attr--find parts prefix)))
+    (attr-find parts prefix)))
 
-(defn attr--find (parts prefix)
+(defn- attr-find
+  (parts prefix)
   (cond
     (empty? parts) nil
-    (string-prefix? (first parts) prefix) (substring (first parts)
-                                            (string-length prefix) (string-length (first parts)))
-    else (attr--find (rest parts) prefix)))
+    (string-prefix? (first parts) prefix)
+      (substring (first parts)
+        (string-length prefix)
+        (string-length (first parts)))
+    else (attr-find (rest parts) prefix)))
 
 (defn string-prefix? (s prefix)
   (and (>= (string-length s) (string-length prefix))

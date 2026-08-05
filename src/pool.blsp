@@ -40,8 +40,12 @@
         ;; recovers on its own once the DB is back — no app restart (see `:replenish`).
         (spawn (replenish-ticker pool))
         (send parent [:started r])
-        (run {:opts opts :size size :members pids :free pids
-              :waiters no-waiters :borrowed {}})))))
+        (run {:opts opts
+              :size size
+              :members pids
+              :free pids
+              :waiters no-waiters
+              :borrowed {}})))))
 
 ;; How often the pool retries reconnecting while below its target size.
 (def *replenish-ms* 5000)
@@ -223,9 +227,10 @@
   (let (tagged (with-conn pool (fn (pid) (f pid))))
     (cond
       (= (get tagged 0) :ok) (get tagged 1)
-      (and (> attempts 1) (retryable? (get tagged 1))) (do
-                                                         (pause 50)
-                                                         (with-retry pool f (- attempts 1)))
+      (and (> attempts 1) (retryable? (get tagged 1)))
+        (do
+          (pause 50)
+          (with-retry pool f (- attempts 1)))
       else (throw (get tagged 1)))))
 
 (defn retryable? (err)

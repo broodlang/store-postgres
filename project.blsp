@@ -8,6 +8,7 @@
 (project
   :name "store-postgres"
   :version "0.1.1"
-  :description "A PostgreSQL adaptor for the `store` storage library: a native Postgres wire driver (SCRAM, v3 protocol, type codecs) and a supervised connection pool, pure Brood over net/tcp."
+  :description
+    "A PostgreSQL adaptor for the `store` storage library: a native Postgres wire driver (SCRAM, v3 protocol, type codecs) and a supervised connection pool, pure Brood over net/tcp."
   :repository "https://github.com/broodlang/store-postgres"
   :dependencies [[store :version "0.1.1"]])

@@ -91,7 +91,8 @@
   "Non-negative `n` → 4-byte big-endian byte string (Postgres Int32)."
   (str (byte->char (bit-and (bit-shift-right n 24) 255))
     (byte->char (bit-and (bit-shift-right n 16) 255))
-    (byte->char (bit-and (bit-shift-right n 8) 255)) (byte->char (bit-and n 255))))
+    (byte->char (bit-and (bit-shift-right n 8) 255))
+    (byte->char (bit-and n 255))))
 
 (defn int16-be (n)
   "Non-negative `n` → 2-byte big-endian byte string (Postgres Int16)."
@@ -102,7 +103,9 @@
   "Read an unsigned 32-bit big-endian int at byte offset `off` of `s` (a `bytes` value or
   byte-string — see `byte-at`)."
   (+ (* (byte-at s off) 16777216)
-    (* (byte-at s (+ off 1)) 65536) (* (byte-at s (+ off 2)) 256) (byte-at s (+ off 3))))
+    (* (byte-at s (+ off 1)) 65536)
+    (* (byte-at s (+ off 2)) 256)
+    (byte-at s (+ off 3))))
 
 (defn read-int16 (s off)
   "Read an unsigned 16-bit big-endian int at byte offset `off` of `s` (a `bytes` value or
@@ -118,12 +121,13 @@
 (defn read-cstring (s off)
   "Read a NUL-terminated string starting at `off`. Returns `[text next-off]` where
   `next-off` is just past the NUL."
-  (read-cstring--scan s off off))
+  (read-cstring-scan s off off))
 
-(defn read-cstring--scan (s start i)
+(defn- read-cstring-scan
+  (s start i)
   (if (= (byte-at s i) 0)
     [(slice->utf8 s start i) (+ i 1)]
-    (read-cstring--scan s start (+ i 1))))
+    (read-cstring-scan s start (+ i 1))))
 
 ;; ---- byte-vector XOR (SCRAM's client proof; no stdlib equivalent) -----------
 
