@@ -8,7 +8,7 @@
   (:use hash)
   (:use crypto)
   (:use encoding)
-  (:use wire/bytes)
+  (:use wire/bytes :exclude [byte-at])
   (:use wire/messages)
   (:alias wire/types)
   (:alias wire/scram))

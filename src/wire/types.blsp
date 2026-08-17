@@ -6,7 +6,7 @@
 
   Binary format (faster, exact for float/numeric) is a later refinement; the OID
   table here is the seam it will plug into."
-  (:use wire/bytes)
+  (:use wire/bytes :exclude [byte-at])
   (:use encoding))
 
 ;; ---- type OIDs (from pg_type) ----------------------------------------------

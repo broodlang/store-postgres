@@ -10,7 +10,7 @@
   frames. Channel binding is not used (gs2 header `n,,`, so the proof's `c=biws`).
   Crypto is all stdlib raw-byte: `crypto/pbkdf2` (binary salt), `hash/*-raw`
   (byte-vector HMAC/SHA), `encoding/base64-*-bytes`; only `xor-bytes` is local."
-  (:use wire/bytes)
+  (:use wire/bytes :exclude [byte-at])
   (:use crypto)
   (:use hash)
   (:use encoding))
