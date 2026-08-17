@@ -7,8 +7,8 @@
 ;; this package makes it speak to Postgres.
 (project
   :name "store-postgres"
-  :version "0.2.0"
+  :version "0.2.1"
   :description
     "A PostgreSQL adaptor for the `store` storage library: a native Postgres wire driver (SCRAM, v3 protocol, type codecs) and a supervised connection pool, pure Brood over net/tcp."
   :repository "https://github.com/broodlang/store-postgres"
-  :dependencies [[store :version "0.2.0"]])
+  :dependencies [[store :version "0.2.1"]])
