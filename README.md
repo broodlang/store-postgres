@@ -3,7 +3,7 @@
 A **PostgreSQL adaptor** for [`store`](https://github.com/broodlang/store), the
 Brood storage library. Contains a native Postgres wire driver — SCRAM auth, the
 v3 simple + extended query protocols, and type codecs — plus a supervised
-connection pool, all pure Brood over `net/tcp`'s binary mode (no libpq). The
+connection pool, all pure Brood over `tcp`'s binary mode (no libpq). The
 `pg` module implements `store`'s adaptor contract over that driver: `store` is
 adaptor-agnostic, and this package makes it speak to Postgres.
 
