@@ -42,7 +42,7 @@
 
 (defn bytea->bytes (text)
   "Postgres bytea text format is `\\x` + hex; decode to a byte vector."
-  (hex-decode-bytes (substring text 2 (string-length text))))
+  (hex-decode-bytes (string/substring text 2 (string/length text))))
 
 ;; ---- encode: Brood value -> wire param --------------------------------------
 
@@ -57,7 +57,7 @@
     (bytes? value) (str (int32-be (byte-length value)) (bytes->bytestr value))
     else
       (let (encoded (utf8-bytestr (param->text value)))
-        (str (int32-be (string-length encoded)) encoded))))
+        (str (int32-be (string/length encoded)) encoded))))
 
 (defn param-format-code (value)
   "The Bind parameter format code for `value`: 1 (binary) for a `bytes` value, else 0

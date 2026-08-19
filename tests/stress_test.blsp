@@ -95,8 +95,8 @@
     (let (r (repo/open (pg/adaptor) (opts))
           rows (repo/exec r "SELECT repeat('ab', 5000) AS big FROM generate_series(1,50)" []))
       (is (= (count rows) 50))
-      (is (= (string-length (get (first rows) :big)) 10000))
-      (is (= (string-length (get (nth rows 49) :big)) 10000))
+      (is (= (string/length (get (first rows) :big)) 10000))
+      (is (= (string/length (get (nth rows 49) :big)) 10000))
       (repo/close r))))
 
 ;; ---- sustained round-trips stay in frame-sync -------------------------------
