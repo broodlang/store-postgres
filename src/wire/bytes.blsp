@@ -40,13 +40,13 @@
 
 (defn byte->char (n)
   "Byte value 0–255 → its 1-char byte string."
-  (char-at *byte-table* n))
+  (string/char-at *byte-table* n))
 
 (defn byte-at (s i)
   "Byte value 0–255 at index `i` — of a `bytes` value (the inbound wire form, O(1) `get`)
   or a byte-string (outbound assembly, a crypto salt). The int/CString readers below run
   over either representation through this."
-  (if (bytes? s) (get s i) (char->int (char-at s i))))
+  (if (bytes? s) (get s i) (char->int (string/char-at s i))))
 
 (defn bytes->bytestr (bv)
   "Byte vector → byte string (one codepoint per byte). For outbound assembly."
@@ -55,11 +55,11 @@
 (defn bytestr->bytes (s)
   "Byte string → byte vector of ints 0–255. For `carrier->bytes` / `crypto`. The carrier
   stores one byte value per codepoint, so `string->codepoints` (a single O(n) pass) yields
-  exactly the bytes. The old `(map (char-at s i) (range …))` was O(n²): `char-at` is
+  exactly the bytes. The old `(map (string/char-at s i) (range …))` was O(n²): `char-at` is
   O(index) once a message carries any codepoint ≥ 128 (e.g. an Int32 length prefix), which
   made a large bytea INSERT quadratic — ~6 s locally / >30 s on a slow host for a ~200 KB
   tarball, tripping the registry's request timeout."
-  (string->codepoints s))
+  (string/to-codepoints s))
 
 (defn utf8-bytestr (s)
   "UTF-8-encode text `s` into a byte string (one codepoint 0–255 per UTF-8 byte)."
@@ -75,7 +75,7 @@
   it slices straight out of the `bytes` buffer."
   (if (bytes? s)
     (utf8-bytes->string (subbytes s start end))
-    (bytestr->utf8 (substring s start end))))
+    (bytestr->utf8 (string/substring s start end))))
 
 (defn carrier->bytes (s)
   "Convert this module's Latin-1 byte-string carrier (outbound message assembly) to a

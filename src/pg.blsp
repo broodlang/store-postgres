@@ -71,9 +71,9 @@
   (str "\""
     (apply str
       (map (fn (i)
-             (let (ch (substring name i (+ i 1)))
+             (let (ch (string/substring name i (+ i 1)))
                (if (= ch "\"") "\"\"" ch)))
-        (range (string-length name))))
+        (range (string/length name))))
     "\""))
 
 (defn create-database (opts)

@@ -11,7 +11,7 @@
 (def *protocol-version* 196608) ; 3.0, encoded as 0x00030000
 (defn framed (type body)
   "Wrap `body` in a typed message: type byte, Int32 self-inclusive length, body."
-  (str type (int32-be (+ 4 (string-length body))) body))
+  (str type (int32-be (+ 4 (string/length body))) body))
 
 (defn startup-message (user database)
   "StartupMessage (no type byte): protocol version then NUL-terminated key/value
@@ -21,7 +21,7 @@
                  (if (nil? database) "" (str (cstring "database") (cstring database)))
                  "\x00")
         body (str (int32-be *protocol-version*) params))
-    (str (int32-be (+ 4 (string-length body))) body)))
+    (str (int32-be (+ 4 (string/length body))) body)))
 
 (defn password-message (text)
   "PasswordMessage ('p') for cleartext / md5 auth: a single CString."
@@ -31,7 +31,7 @@
   "SASLInitialResponse ('p'): the chosen mechanism name (CString), then the SASL
   data length (Int32) and the data itself (client-first)."
   (let (data (utf8-bytestr client-first))
-    (framed "p" (str (cstring mechanism) (int32-be (string-length data)) data))))
+    (framed "p" (str (cstring mechanism) (int32-be (string/length data)) data))))
 
 (defn sasl-response (client-final)
   "SASLResponse ('p'): raw SASL data (client-final), no length prefix."

@@ -37,19 +37,19 @@
   (cond
     (empty? parts) nil
     (string-prefix? (first parts) prefix)
-      (substring (first parts)
-        (string-length prefix)
-        (string-length (first parts)))
+      (string/substring (first parts)
+        (string/length prefix)
+        (string/length (first parts)))
     else (attr-find (rest parts) prefix)))
 
 (defn string-prefix? (s prefix)
-  (and (>= (string-length s) (string-length prefix))
-    (= (substring s 0 (string-length prefix)) prefix)))
+  (and (>= (string/length s) (string/length prefix))
+    (= (string/substring s 0 (string/length prefix)) prefix)))
 
 (defn continue (state server-first)
   "Process server-first; compute the client proof and the expected server signature.
   Returns the state extended with `:final` (client-final text) and `:server-sig`."
-  (let (parts (string-split server-first ",")
+  (let (parts (string/split server-first ",")
         rnonce (attr parts "r")
         ;; RFC 5802 §5.1: the server nonce must extend our client nonce. Bail if it
         ;; doesn't — a server (or MITM) that can't echo our nonce isn't the one we spoke to.
@@ -75,7 +75,7 @@
 (defn finish (state server-final)
   "Verify the server's signature from server-final (`v=…`). Proves mutual auth —
   the server knew the stored key, not just that our proof validated."
-  (let (parts (string-split server-final ",")
+  (let (parts (string/split server-final ",")
         v (attr parts "v")
         expected (base64-encode-bytes (get state :server-sig)))
     (if (= v expected)

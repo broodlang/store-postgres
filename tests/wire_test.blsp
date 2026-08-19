@@ -17,7 +17,7 @@
     (is (= (read-int16 (int16-be 1) 0) 1)))
   (test "cstring writes a NUL terminator and reads back"
     (let (s (cstring "user"))
-      (is (= (string-length s) 5))
+      (is (= (string/length s) 5))
       (is (= (read-cstring s 0) ["user" 5]))))
   (test "xor-bytes combines two equal-length vectors"
     (is (= (xor-bytes [1 2 3] [1 1 1]) [0 3 2]))))
