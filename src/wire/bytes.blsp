@@ -59,7 +59,7 @@
   O(index) once a message carries any codepoint ≥ 128 (e.g. an Int32 length prefix), which
   made a large bytea INSERT quadratic — ~6 s locally / >30 s on a slow host for a ~200 KB
   tarball, tripping the registry's request timeout."
-  (string/to-codepoints s))
+  (string/->codepoints s))
 
 (defn utf8-bytestr (s)
   "UTF-8-encode text `s` into a byte string (one codepoint 0–255 per UTF-8 byte)."

@@ -70,8 +70,8 @@
     (= value true) "t"
     (= value false) "f"
     (string? value) value
-    (int? value) (number->string value)
-    (float? value) (number->string value)
+    (int? value) (str value)
+    (float? value) (str value)
     ;; a decimal renders as plain numeric text (no `M`) — what Postgres numeric accepts
     (decimal? value) (decimal->string value)
     else (str value)))
