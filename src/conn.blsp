@@ -25,11 +25,11 @@
 
 (defn send-message (sock message)
   "Write an assembled wire byte-string to `sock` as a first-class `bytes` value, so
-  `tcp-send` emits it verbatim. Since ADR-141, `tcp-send` UTF-8-encodes a *string*
+  `tcp/send` emits it verbatim. Since ADR-141, `tcp/send` UTF-8-encodes a *string*
   leaf — which would re-encode every wire byte ≥ 0x80 (a message's Int32 length prefix
   once it reaches 128 bytes, or any high body byte) into two bytes and desync the
   server. See wire/bytes/carrier->bytes."
-  (tcp-send sock (carrier->bytes message)))
+  (tcp/send sock (carrier->bytes message)))
 
 ;; ---- connect + handshake ----------------------------------------------------
 
@@ -38,8 +38,8 @@
   :password :database. Returns a conn map ready for `query`."
   (let (host (get opts :host "127.0.0.1")
         port (get opts :port 5432)
-        sock (tcp-connect host port))
-    (tcp-set-binary sock true)
+        sock (tcp/connect host port))
+    (tcp/set-binary sock true)
     (send-message sock (startup-message (get opts :user) (get opts :database)))
     (handshake {:sock sock
                 :user (get opts :user)
@@ -302,4 +302,4 @@
 (defn close (conn)
   "Send Terminate and close the socket."
   (send-message (get conn :sock) (terminate-message))
-  (tcp-close (get conn :sock)))
+  (tcp/close (get conn :sock)))
