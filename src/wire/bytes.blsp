@@ -5,7 +5,7 @@
 
     - a *byte string*  — Brood codepoints 0–255, the convenient assembly form for
                          OUTBOUND messages; `carrier->bytes` turns a finished message into
-                         a first-class `bytes` value for `tcp-send` (ADR-141);
+                         a first-class `bytes` value for `tcp/send` (ADR-141);
     - a *`bytes` value* — what binary-mode `[:tcp …]` delivers and what the INBOUND reader
                          works over directly (`byte-at`/`subbytes`/`byte-length`) — no
                          Latin-1 carrier copy, so a large result isn't re-materialised as a
@@ -79,7 +79,7 @@
 
 (defn carrier->bytes (s)
   "Convert this module's Latin-1 byte-string carrier (outbound message assembly) to a
-  first-class `bytes` value for `tcp-send`. Since ADR-141, `tcp-send` UTF-8-encodes a
+  first-class `bytes` value for `tcp/send`. Since ADR-141, `tcp/send` UTF-8-encodes a
   *string* leaf: it would re-encode every carrier codepoint ≥ 0x80 into two wire bytes,
   corrupting a message's Int32 length prefix (any message ≥ 128 bytes) and any high body
   byte. A `bytes` value is written verbatim instead."
