@@ -7,7 +7,7 @@
                          OUTBOUND messages; `carrier->bytes` turns a finished message into
                          a first-class `bytes` value for `tcp/send` (ADR-141);
     - a *`bytes` value* — what binary-mode `[:tcp …]` delivers and what the INBOUND reader
-                         works over directly (`byte-at`/`subbytes`/`byte-length`) — no
+                         works over directly (`octet-at`/`subbytes`/`byte-length`) — no
                          Latin-1 carrier copy, so a large result isn't re-materialised as a
                          codepoint string;
     - a *byte vector*  — a vector of ints 0–255, what `crypto`/`hash` operate on.
@@ -42,7 +42,7 @@
   "Byte value 0–255 → its 1-char byte string."
   (string/char-at *byte-table* n))
 
-(defn byte-at (s i)
+(defn octet-at (s i)
   "Byte value 0–255 at index `i` — of a `bytes` value (the inbound wire form, O(1) `get`)
   or a byte-string (outbound assembly, a crypto salt). The int/CString readers below run
   over either representation through this."
@@ -101,16 +101,16 @@
 
 (defn read-int32 (s off)
   "Read an unsigned 32-bit big-endian int at byte offset `off` of `s` (a `bytes` value or
-  byte-string — see `byte-at`)."
-  (+ (* (byte-at s off) 16777216)
-    (* (byte-at s (+ off 1)) 65536)
-    (* (byte-at s (+ off 2)) 256)
-    (byte-at s (+ off 3))))
+  byte-string — see `octet-at`)."
+  (+ (* (octet-at s off) 16777216)
+    (* (octet-at s (+ off 1)) 65536)
+    (* (octet-at s (+ off 2)) 256)
+    (octet-at s (+ off 3))))
 
 (defn read-int16 (s off)
   "Read an unsigned 16-bit big-endian int at byte offset `off` of `s` (a `bytes` value or
-  byte-string — see `byte-at`)."
-  (+ (* (byte-at s off) 256) (byte-at s (+ off 1))))
+  byte-string — see `octet-at`)."
+  (+ (* (octet-at s off) 256) (octet-at s (+ off 1))))
 
 ;; ---- C strings (NUL-terminated) ---------------------------------------------
 
@@ -125,7 +125,7 @@
 
 (defn- read-cstring-scan
   (s start i)
-  (if (= (byte-at s i) 0)
+  (if (= (octet-at s i) 0)
     [(slice->utf8 s start i) (+ i 1)]
     (read-cstring-scan s start (+ i 1))))
 

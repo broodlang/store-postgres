@@ -31,8 +31,8 @@
   (test "nil becomes a -1 length (SQL NULL), no value bytes"
     (let (p (encode-param nil))
       (is (= (string/length p) 4))
-      (is (= (byte-at p 0) 255))
-      (is (= (byte-at p 3) 255))))
+      (is (= (octet-at p 0) 255))
+      (is (= (octet-at p 3) 255))))
   (test "an int is length-prefixed text"
     (let (p (encode-param 42))
       (is (= (read-int32 p 0) 2)) ; length of "42"
