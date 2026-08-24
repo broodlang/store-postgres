@@ -6,7 +6,7 @@
   (:alias pool))
 
 (defn env (name default)
-  (or (getenv name) default))
+  (or (os/getenv name) default))
 
 (defn opts ()
   {:host (env "PGHOST" "127.0.0.1")

@@ -56,11 +56,11 @@
 (defn opts-from-env (default-database)
   "Build Postgres connection opts from the standard $PG* env vars.
   `default-database` is used when $PGDATABASE is not set."
-  {:host (or (getenv "PGHOST") "127.0.0.1")
-   :port (string->number (or (getenv "PGPORT") "5432"))
-   :user (or (getenv "PGUSER") "postgres")
-   :password (or (getenv "PGPASSWORD") "postgres")
-   :database (or (getenv "PGDATABASE") default-database)
+  {:host (or (os/getenv "PGHOST") "127.0.0.1")
+   :port (string->number (or (os/getenv "PGPORT") "5432"))
+   :user (or (os/getenv "PGUSER") "postgres")
+   :password (or (os/getenv "PGPASSWORD") "postgres")
+   :database (or (os/getenv "PGDATABASE") default-database)
    :size 5})
 
 (defn quote-identifier (name)

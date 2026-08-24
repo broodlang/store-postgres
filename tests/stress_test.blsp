@@ -18,11 +18,11 @@
   (:alias pg))
 
 (defn opts ()
-  {:host (or (getenv "PGHOST") "127.0.0.1")
-   :port (string->number (or (getenv "PGPORT") "5432"))
-   :user (or (getenv "PGUSER") "postgres")
-   :password (or (getenv "PGPASSWORD") "postgres")
-   :database (or (getenv "PGDATABASE") "postgres")
+  {:host (or (os/getenv "PGHOST") "127.0.0.1")
+   :port (string->number (or (os/getenv "PGPORT") "5432"))
+   :user (or (os/getenv "PGUSER") "postgres")
+   :password (or (os/getenv "PGPASSWORD") "postgres")
+   :database (or (os/getenv "PGDATABASE") "postgres")
    :size 1})
 
 (defn rep (unit n)
