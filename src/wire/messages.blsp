@@ -5,7 +5,7 @@
   the length counts itself but not the type byte. Each returns a *byte string*; `conn`
   hands it to `tcp/send` as a first-class `bytes` value (`carrier->bytes`, ADR-141).
   Backend-message decoding lives in `conn`."
-  (:use wire/bytes :exclude [byte-at])
+  (:use wire/bytes)
   (:alias wire/types))
 
 (def *protocol-version* 196608) ; 3.0, encoded as 0x00030000
