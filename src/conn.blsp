@@ -72,7 +72,7 @@
     (cond
       (= subtype 0) (handshake conn) ; AuthenticationOk
       (= subtype 3) (send-password conn) ; CleartextPassword
-      (= subtype 5) (send-md5 conn (subbytes body 4 8))
+      (= subtype 5) (send-md5 conn (bytes/slice body 4 8))
       (= subtype 10) (scram-begin conn) ; SASL — we offer SCRAM-SHA-256
       (= subtype 11) (scram-continue conn body) ; SASLContinue (server-first)
       (= subtype 12) (scram-finish conn body) ; SASLFinal (server signature)
@@ -87,8 +87,8 @@
   `bytes` slice from the AuthenticationMD5Password message."
   (let (inner (md5 (str (get conn :password) (get conn :user)))
         outer (md5-bytes (into []
-                           (append (string->utf8-bytes inner)
-                             (bytes->list salt)))))
+                           (append (string/->bytes inner)
+                             (bytes/->list salt)))))
     (send-message (get conn :sock) (password-message (str "md5" outer)))
     (handshake conn)))
 
@@ -99,13 +99,13 @@
     (handshake (assoc conn :scram st))))
 
 (defn scram-continue (conn body)
-  (let (server-first (slice->utf8 body 4 (byte-length body))
+  (let (server-first (slice->utf8 body 4 (bytes/length body))
         st (scram/continue (get conn :scram) server-first))
     (send-message (get conn :sock) (sasl-response (get st :final)))
     (handshake (assoc conn :scram st))))
 
 (defn scram-finish (conn body)
-  (let (server-final (slice->utf8 body 4 (byte-length body)))
+  (let (server-final (slice->utf8 body 4 (bytes/length body)))
     (if (= (scram/finish (get conn :scram) server-final) :ok)
       (handshake conn)
       (fail :auth "SCRAM server verification failed"))))
@@ -188,7 +188,7 @@
 
 (defn buffered (conn)
   "Unconsumed byte count in the conn's buffer (bytes from `:off` to the end)."
-  (- (byte-length (get conn :buf)) (get conn :off)))
+  (- (bytes/length (get conn :buf)) (get conn :off)))
 
 (defn read-frame (conn)
   "Pull one complete backend message. Returns `[type body conn']` where `type` is
@@ -199,14 +199,14 @@
   (let (conn (fill-to conn 5)
         buf (get conn :buf)
         off (get conn :off)
-        type (byte->char (byte-at buf off))
+        type (byte->char (bytes/at buf off))
         total (+ 1 (read-int32 buf (+ off 1)))
         conn (fill-to conn total)
         ;; fill-to may have compacted the buffer, resetting :off — re-read both
         buf (get conn :buf)
         off (get conn :off))
     [type
-      (subbytes buf (+ off 5) (+ off total))
+      (bytes/slice buf (+ off 5) (+ off total))
       (assoc conn :off (+ off total))]))
 
 (defn fill-to (conn n)
@@ -229,8 +229,8 @@
                            :timeout true
                            :message "store: timed out waiting for server"})))
           buf (get conn :buf)
-          kept (subbytes buf (get conn :off) (byte-length buf)))
-      (fill-to (assoc conn :buf (bytes-concat kept more) :off 0) n))))
+          kept (bytes/slice buf (get conn :off) (bytes/length buf)))
+      (fill-to (assoc conn :buf (bytes/concat kept more) :off 0) n))))
 
 ;; ---- backend message decoders -----------------------------------------------
 
@@ -291,9 +291,9 @@
       (if (get fields "C") (str " [" (get fields "C") "]") ""))))
 
 (defn error-fields (body off acc)
-  (if (= (byte-at body off) 0)
+  (if (= (bytes/at body off) 0)
     acc
-    (let (code (byte->char (byte-at body off))
+    (let (code (byte->char (bytes/at body off))
           r (read-cstring body (+ off 1)))
       (error-fields body (get r 1) (assoc acc code (get r 0))))))
 

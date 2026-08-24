@@ -63,18 +63,18 @@
 
 (defn utf8-bytestr (s)
   "UTF-8-encode text `s` into a byte string (one codepoint 0–255 per UTF-8 byte)."
-  (apply str (map byte->char (string->utf8-bytes s))))
+  (apply str (map byte->char (string/->bytes s))))
 
 (defn bytestr->utf8 (s)
   "Decode a byte string holding UTF-8 back into text."
-  (utf8-bytes->string (bytes (bytestr->bytes s))))
+  (string/bytes-> (bytes (bytestr->bytes s))))
 
 (defn slice->utf8 (s start end)
   "Decode the UTF-8 bytes in `s[start:end]` to text — `s` a `bytes` value (inbound reader)
   or a byte-string (legacy). The inbound path never rebuilds the whole stream as a string;
   it slices straight out of the `bytes` buffer."
   (if (bytes? s)
-    (utf8-bytes->string (subbytes s start end))
+    (string/bytes-> (bytes/slice s start end))
     (bytestr->utf8 (string/substring s start end))))
 
 (defn carrier->bytes (s)

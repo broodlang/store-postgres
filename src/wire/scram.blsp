@@ -17,7 +17,7 @@
 
 (defn s->bv (s)
   "Text → its UTF-8 byte vector (SCRAM messages are ASCII)."
-  (into [] (string->utf8-bytes s)))
+  (into [] (string/->bytes s)))
 
 (defn start (user password nonce)
   "Begin SCRAM: build client-first. `nonce` is the caller's random client nonce."

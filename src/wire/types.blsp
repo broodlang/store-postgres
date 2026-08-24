@@ -54,7 +54,7 @@
   text format, and the server casts per the column type it inferred at Parse."
   (cond
     (nil? value) (int32-be 4294967295) ; length -1 → SQL NULL
-    (bytes? value) (str (int32-be (byte-length value)) (bytes->bytestr value))
+    (bytes? value) (str (int32-be (bytes/length value)) (bytes->bytestr value))
     else
       (let (encoded (utf8-bytestr (param->text value)))
         (str (int32-be (string/length encoded)) encoded))))
