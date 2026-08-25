@@ -58,7 +58,7 @@
             (throw {:store-error :auth
                     :message "store: scram: server nonce does not extend client nonce"}))
         salt (base64-decode-bytes (attr parts "s"))
-        iters (string->number (attr parts "i"))
+        iters (string/->number (attr parts "i"))
         salted (pbkdf2 (get state :password) salt iters 32)
         client-key (hmac-sha256-raw salted (s->bv "Client Key"))
         stored-key (sha256-raw client-key)
@@ -79,5 +79,4 @@
         v (attr parts "v")
         expected (base64-encode-bytes (get state :server-sig)))
     (if (= v expected)
-      :ok
-      [:error "scram: server signature mismatch"])))
+      :ok [:error "scram: server signature mismatch"])))

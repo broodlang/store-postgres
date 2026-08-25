@@ -10,20 +10,20 @@
 
 (defn opts ()
   {:host (env "PGHOST" "127.0.0.1")
-   :port (string->number (env "PGPORT" "5432"))
+   :port (string/->number (env "PGPORT" "5432"))
    :user (env "PGUSER" "postgres")
    :password (env "PGPASSWORD" "")
    :database (env "PGDATABASE" "postgres")})
 
 (defn show (result)
-  (println "  columns:" (get result :columns))
-  (println "  rows:")
-  (map (fn (row) (println "   " row)) (get result :rows)))
+  (io/puts "  columns:" (get result :columns))
+  (io/puts "  rows:")
+  (map (fn (row) (io/puts "   " row)) (get result :rows)))
 
 (defn run-query (c sql)
   "Run `sql` (no params), print its columns and rows, return the threaded conn."
-  (println "")
-  (println "sql>" sql)
+  (io/puts "")
+  (io/puts "sql>" sql)
   (let (res (conn/query c sql)
         c (get res 1))
     (show (get res 0))
@@ -31,8 +31,8 @@
 
 (defn run-exec (c sql params)
   "Run a parameterized `sql` with `params`, print the result, return the conn."
-  (println "")
-  (println "sql>" sql "  params:" params)
+  (io/puts "")
+  (io/puts "sql>" sql "  params:" params)
   (let (res (conn/exec c sql params)
         c (get res 1))
     (show (get res 0))
@@ -41,41 +41,41 @@
 (defn demo-pool (o)
   "Exercise the pool: sequential, concurrent (more jobs than connections), and
   kill-and-recover."
-  (println "")
-  (println "=== pool (size 3) ===")
+  (io/puts "")
+  (io/puts "=== pool (size 3) ===")
   (let (p (pool/start (assoc o :size 3)))
-    (println "")
-    (println "sequential:")
-    (println "  query:" (get (pool/query p "select 'hello from the pool' as msg") :rows))
-    (println "  exec :" (get (pool/exec p "select $1::int * 2 as doubled" [21]) :rows))
+    (io/puts "")
+    (io/puts "sequential:")
+    (io/puts "  query:" (get (pool/query p "select 'hello from the pool' as msg") :rows))
+    (io/puts "  exec :" (get (pool/exec p "select $1::int * 2 as doubled" [21]) :rows))
 
-    (println "")
-    (println "6 concurrent jobs through 3 connections (backend pid shows reuse):")
+    (io/puts "")
+    (io/puts "6 concurrent jobs through 3 connections (backend pid shows reuse):")
     (let (parent (self))
       (map (fn (i)
              (spawn (let (res (pool/query p
                                 (str "select " i " as job, pg_backend_pid() as backend")))
                       (send parent [:done (get res :rows)]))))
         (range 6))
-      (map (fn (_) (receive ([:done rows] (println "  ->" rows)))) (range 6)))
+      (map (fn (_) (receive ([:done rows] (io/puts "  ->" rows)))) (range 6)))
 
-    (println "")
-    (println "kill a connection mid-pool; pool drops + respawns it:")
+    (io/puts "")
+    (io/puts "kill a connection mid-pool; pool drops + respawns it:")
     (let (victim (pool/checkout p))
-      (println "  killing" victim)
+      (io/puts "  killing" victim)
       (exit victim :killed)
       (pool/checkin p victim)) ; returning the dead pid — the pool ignores it
     (map (fn (i)
-           (println "  post-kill query" i ":" (get (pool/query p "select 'ok' as state") :rows)))
+           (io/puts "  post-kill query" i ":" (get (pool/query p "select 'ok' as state") :rows)))
       (range 4))
 
     (pool/stop p)
-    (println "")
-    (println "pool stopped.")))
+    (io/puts "")
+    (io/puts "pool stopped.")))
 
 (defn main ()
   (let (o (opts))
-    (println (str "Connecting to "
+    (io/puts (str "Connecting to "
                (get o :user)
                "@"
                (get o :host)
@@ -85,7 +85,7 @@
                (get o :database)
                " …"))
     (let (c (conn/connect o))
-      (println "Connected. server_version =" (get (get c :params) "server_version"))
+      (io/puts "Connected. server_version =" (get (get c :params) "server_version"))
       (let (c (run-query c "select version()")
             ;; typed decoding: int4, text, bool, float8, numeric, NULL
             c (run-query c
@@ -99,8 +99,8 @@
             ;; injection attempt is just data, not SQL
             c (run-exec c "select $1 as raw" ["'; drop table users; --"]))
         (conn/close c)
-        (println "")
-        (println "Single-connection demo done.")
+        (io/puts "")
+        (io/puts "Single-connection demo done.")
         (demo-pool o)
-        (println "")
-        (println "Spike complete.")))))
+        (io/puts "")
+        (io/puts "Spike complete.")))))
