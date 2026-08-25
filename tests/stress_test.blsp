@@ -19,7 +19,7 @@
 
 (defn opts ()
   {:host (or (os/getenv "PGHOST") "127.0.0.1")
-   :port (string->number (or (os/getenv "PGPORT") "5432"))
+   :port (string/->number (or (os/getenv "PGPORT") "5432"))
    :user (or (os/getenv "PGUSER") "postgres")
    :password (or (os/getenv "PGPASSWORD") "postgres")
    :database (or (os/getenv "PGDATABASE") "postgres")
@@ -36,8 +36,7 @@
 ;; ---- outbound message-length boundaries -------------------------------------
 
 (describe "outbound message length across the Int32-length-prefix byte boundaries"
-  :isolated
-  (test "a literal query crossing each boundary round-trips (simple protocol)"
+  :isolated (test "a literal query crossing each boundary round-trips (simple protocol)"
     (let (r (repo/open (pg/adaptor) (opts)))
       ;; message length ≈ n + ~24; the sweep straddles 0x80 (128), 0x100 (256) and
       ;; 0x4000 (16384) so every length byte that could be >= 0x80 is exercised.
@@ -58,8 +57,7 @@
 ;; ---- high bytes (>= 0x80) survive verbatim ----------------------------------
 
 (describe "high bytes (>= 0x80) reach the wire and return byte-faithful"
-  :isolated
-  (test "a non-ASCII literal in the SQL text (simple protocol)"
+  :isolated (test "a non-ASCII literal in the SQL text (simple protocol)"
     (let (r (repo/open (pg/adaptor) (opts)))
       (is (= (value-of (repo/exec r "SELECT 'café — 日本語 — 🌼'::text AS v" []) :v)
             "café — 日本語 — 🌼"))
@@ -102,8 +100,7 @@
 ;; ---- sustained round-trips stay in frame-sync -------------------------------
 
 (describe "sustained sequential round-trips stay in sync"
-  :isolated
-  (test "2000 parameterized queries on one connection each return the right value"
+  :isolated (test "2000 parameterized queries on one connection each return the right value"
     (let (r (repo/open (pg/adaptor) (opts))
           all-ok (reduce (fn (acc i)
                            (and acc (= (value-of (repo/exec r "SELECT $1::int AS n" [i]) :n) i)))
@@ -115,8 +112,7 @@
 ;; ---- concurrent pool load ---------------------------------------------------
 
 (describe "concurrent load across a multi-connection pool"
-  :isolated
-  (test "40 workers × 15 queries over an 8-connection pool all return correct results"
+  :isolated (test "40 workers × 15 queries over an 8-connection pool all return correct results"
     (let (r (repo/open (pg/adaptor) (assoc (opts) :size 8))
           parent (self)
           workers 40

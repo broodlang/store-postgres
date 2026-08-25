@@ -8,7 +8,7 @@
 
 (defn opts ()
   {:host (or (os/getenv "PGHOST") "127.0.0.1")
-   :port (string->number (or (os/getenv "PGPORT") "5432"))
+   :port (string/->number (or (os/getenv "PGPORT") "5432"))
    :user (or (os/getenv "PGUSER") "postgres")
    :password (or (os/getenv "PGPASSWORD") "postgres")
    :database (or (os/getenv "PGDATABASE") "postgres")})
@@ -18,8 +18,7 @@
   (get (first (get result :rows)) 0))
 
 (describe "connection process"
-  :isolated
-  (test "serves a simple query"
+  :isolated (test "serves a simple query"
     (let (pid (connection/start (opts))
           res (connection/query pid "select 42 as answer"))
       (is (= (get res 0) :ok))
@@ -40,8 +39,7 @@
       (connection/stop pid))))
 
 (describe "pool"
-  :isolated
-  (test "sequential query and exec"
+  :isolated (test "sequential query and exec"
     (let (p (pool/start (assoc (opts) :size 2)))
       (is (= (one-int (pool/query p "select 1 as x")) 1))
       (is (= (one-int (pool/exec p "select $1::int as x" [99])) 99))

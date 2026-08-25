@@ -32,8 +32,8 @@
   (cond
     (nil? text) nil
     (= oid *oid-bool*) (= text "t")
-    (includes? *int-oids* oid) (string->number text)
-    (includes? *float-oids* oid) (string->number text)
+    (includes? *int-oids* oid) (string/->number text)
+    (includes? *float-oids* oid) (string/->number text)
     (= oid *oid-bytea*) (bytea->bytes text)
     ;; numeric decodes to an exact Brood decimal — full precision (a float would
     ;; lose it). text/varchar/uuid/json/timestamp/date/time pass through as strings.

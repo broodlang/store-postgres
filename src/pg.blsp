@@ -57,7 +57,7 @@
   "Build Postgres connection opts from the standard $PG* env vars.
   `default-database` is used when $PGDATABASE is not set."
   {:host (or (os/getenv "PGHOST") "127.0.0.1")
-   :port (string->number (or (os/getenv "PGPORT") "5432"))
+   :port (string/->number (or (os/getenv "PGPORT") "5432"))
    :user (or (os/getenv "PGUSER") "postgres")
    :password (or (os/getenv "PGPASSWORD") "postgres")
    :database (or (os/getenv "PGDATABASE") default-database)
@@ -86,12 +86,12 @@
                               "SELECT 1 FROM pg_database WHERE datname = $1"
                               [dbname]))))
     (if exists
-      (println (str "Database '" dbname "' already exists."))
+      (io/puts (str "Database '" dbname "' already exists."))
       (do
-        (println (str "Creating database '" dbname "'..."))
+        (io/puts (str "Creating database '" dbname "'..."))
         ;; the existence probe binds dbname as a param (safe); the CREATE can't, so quote it
         (repo/exec admin (str "CREATE DATABASE " (quote-identifier dbname)) [])
-        (println "Created.")))
+        (io/puts "Created.")))
     (repo/close admin)))
 
 ;; ---- low-level single-connection API (re-exported for direct use) -----------

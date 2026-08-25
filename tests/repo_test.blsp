@@ -8,7 +8,7 @@
 
 (defn opts ()
   {:host (or (os/getenv "PGHOST") "127.0.0.1")
-   :port (string->number (or (os/getenv "PGPORT") "5432"))
+   :port (string/->number (or (os/getenv "PGPORT") "5432"))
    :user (or (os/getenv "PGUSER") "postgres")
    :password (or (os/getenv "PGPASSWORD") "postgres")
    :database (or (os/getenv "PGDATABASE") "postgres")
@@ -16,8 +16,7 @@
    :size 1})
 
 (describe "repo over the pg adaptor (query-as-data → real Postgres)"
-  :isolated
-  (test "all returns rows as maps; where/order compile and run"
+  :isolated (test "all returns rows as maps; where/order compile and run"
     (let (r (repo/open (pg/adaptor) (opts)))
       (repo/exec r "create temp table t (id int, name text, amount numeric)" [])
       (repo/exec r
