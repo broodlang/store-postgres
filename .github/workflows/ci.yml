@@ -1,0 +1,26 @@
+name: CI
+
+# Thin caller. The gate itself — build brood, `nest check`, `nest format --check`,
+# `nest test` — lives once in broodlang/brood/.github/workflows/package-ci.yml, so a
+# change to what "green" means is one edit rather than one per repo.
+#
+# `postgres: true` because this package IS a Postgres driver: its pool, wire-protocol
+# and repo tests all talk to a real server. Running it with `run-tests: false` would
+# have meant a driver whose driving is never exercised — the suite that matters most
+# here is exactly the one that needs the service.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    uses: broodlang/brood/.github/workflows/package-ci.yml@main
+    with:
+      postgres: true
