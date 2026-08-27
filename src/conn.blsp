@@ -88,7 +88,7 @@
   (let (inner (md5 (str (get conn :password) (get conn :user)))
         outer (md5-bytes (into []
                            (append (string/->bytes inner)
-                             (bytes/->list salt)))))
+                             (seq salt)))))
     (send-message (get conn :sock) (password-message (str "md5" outer)))
     (handshake conn)))
 

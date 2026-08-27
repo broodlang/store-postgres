@@ -46,7 +46,7 @@
   "Byte value 0–255 at index `i` — of a `bytes` value (the inbound wire form, O(1) `get`)
   or a byte-string (outbound assembly, a crypto salt). The int/CString readers below run
   over either representation through this."
-  (if (bytes? s) (get s i) (char->int (string/char-at s i))))
+  (if (bytes? s) (get s i) (string/char->int (string/char-at s i))))
 
 (defn bytes->bytestr (bv)
   "Byte vector → byte string (one codepoint per byte). For outbound assembly."
@@ -89,15 +89,15 @@
 
 (defn int32-be (n)
   "Non-negative `n` → 4-byte big-endian byte string (Postgres Int32)."
-  (str (byte->char (bit-and (bit-shift-right n 24) 255))
-    (byte->char (bit-and (bit-shift-right n 16) 255))
-    (byte->char (bit-and (bit-shift-right n 8) 255))
-    (byte->char (bit-and n 255))))
+  (str (byte->char (bit/and (bit/shift-right n 24) 255))
+    (byte->char (bit/and (bit/shift-right n 16) 255))
+    (byte->char (bit/and (bit/shift-right n 8) 255))
+    (byte->char (bit/and n 255))))
 
 (defn int16-be (n)
   "Non-negative `n` → 2-byte big-endian byte string (Postgres Int16)."
-  (str (byte->char (bit-and (bit-shift-right n 8) 255))
-    (byte->char (bit-and n 255))))
+  (str (byte->char (bit/and (bit/shift-right n 8) 255))
+    (byte->char (bit/and n 255))))
 
 (defn read-int32 (s off)
   "Read an unsigned 32-bit big-endian int at byte offset `off` of `s` (a `bytes` value or
@@ -133,4 +133,4 @@
 
 (defn xor-bytes (a b)
   "XOR two equal-length byte vectors → byte vector."
-  (into [] (map (fn (i) (bit-xor (get a i) (get b i))) (range (count a)))))
+  (into [] (map (fn (i) (bit/xor (get a i) (get b i))) (range (count a)))))

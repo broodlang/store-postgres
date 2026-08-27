@@ -19,7 +19,7 @@
     (is (= (decode-value *oid-numeric* "9.99") 9.99M))
     (is (decimal? (decode-value *oid-numeric* "9.99")))
     (is (= (decode-value *oid-numeric* "12345678901234567890.0001")
-          (decimal "12345678901234567890.0001"))))
+          (decimal/of "12345678901234567890.0001"))))
   (test "text types pass through"
     (is (= (decode-value 25 "hello") "hello")))
   (test "bytea hex decodes to a bytes value"
