@@ -49,7 +49,7 @@
   "Turn the driver's positional `{:columns :rows}` into a list of `{:col value…}`
   maps — the adaptor-contract row shape."
   (let (cols (map keyword (get result :columns)))
-    (map (fn (row) (zipmap cols row)) (get result :rows))))
+    (map (fn (row) (map/zipmap cols row)) (get result :rows))))
 
 ;; ---- environment / convenience helpers -------------------------------------
 

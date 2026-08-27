@@ -129,7 +129,7 @@
                                          "i"
                                          i
                                          "-"
-                                         (rep "z" (+ 90 (mod (* (+ w 1) (+ i 1)) 120)))))
+                                         (rep "z" (+ 90 (math/mod (* (+ w 1) (+ i 1)) 120)))))
                            (and acc
                              (= (value-of (repo/exec r "SELECT $1::text AS v" [payload]) :v)
                                payload))))
