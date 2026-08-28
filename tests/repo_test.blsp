@@ -196,8 +196,8 @@
       ;; migrate to v2: ADD balance (no drop by default)
       (repo/migrate r v2)
       (let (cols (repo/columns r v2))
-        (is (= (sort (map name cols)) (list "balance" "gone" "id" "name"))))
+        (is (= (sort (map ->string cols)) (list "balance" "gone" "id" "name"))))
       ;; opt in to dropping the column gone from the schema
       (repo/migrate r v2 {:drop true})
-      (is (= (sort (map name (repo/columns r v2))) (list "balance" "id" "name")))
+      (is (= (sort (map ->string (repo/columns r v2))) (list "balance" "id" "name")))
       (repo/close r))))
