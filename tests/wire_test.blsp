@@ -45,8 +45,7 @@
 
   (test "a tampered server signature is rejected"
     (let (st (continue (start "user" "pencil" *client-nonce*) *server-first*))
-      (is (= (first (finish st "v=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="))
-            :error))))
+      (is (= (first (finish st "v=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")) :error))))
 
   (test "a server nonce that doesn't extend the client nonce is rejected (RFC 5802 §5.1)"
     (let (st (start "user" "pencil" *client-nonce*))

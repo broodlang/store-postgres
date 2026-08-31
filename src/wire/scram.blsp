@@ -32,8 +32,7 @@
   (let (prefix (str key "="))
     (attr-find parts prefix)))
 
-(defn- attr-find
-  (parts prefix)
+(defn- attr-find (parts prefix)
   (cond
     (empty? parts) nil
     (string-prefix? (first parts) prefix)

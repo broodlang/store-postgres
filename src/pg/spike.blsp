@@ -18,7 +18,7 @@
 (defn show (result)
   (io/puts "  columns:" (get result :columns))
   (io/puts "  rows:")
-  (map (fn (row) (io/puts "   " row)) (get result :rows)))
+  (map (get result :rows) (fn (row) (io/puts "   " row))))
 
 (defn run-query (c sql)
   "Run `sql` (no params), print its columns and rows, return the threaded conn."
@@ -52,12 +52,12 @@
     (io/puts "")
     (io/puts "6 concurrent jobs through 3 connections (backend pid shows reuse):")
     (let (parent (self))
-      (map (fn (i)
-             (spawn (let (res (pool/query p
-                                (str "select " i " as job, pg_backend_pid() as backend")))
-                      (send parent [:done (get res :rows)]))))
-        (range 6))
-      (map (fn (_) (receive ([:done rows] (io/puts "  ->" rows)))) (range 6)))
+      (map (range 6)
+        (fn (i)
+          (spawn (let (res (pool/query p
+                             (str "select " i " as job, pg_backend_pid() as backend")))
+                   (send parent [:done (get res :rows)])))))
+      (map (range 6) (fn (_) (receive ([:done rows] (io/puts "  ->" rows))))))
 
     (io/puts "")
     (io/puts "kill a connection mid-pool; pool drops + respawns it:")
@@ -65,9 +65,9 @@
       (io/puts "  killing" victim)
       (exit victim :killed)
       (pool/checkin p victim)) ; returning the dead pid — the pool ignores it
-    (map (fn (i)
-           (io/puts "  post-kill query" i ":" (get (pool/query p "select 'ok' as state") :rows)))
-      (range 4))
+    (map (range 4)
+      (fn (i)
+        (io/puts "  post-kill query" i ":" (get (pool/query p "select 'ok' as state") :rows))))
 
     (pool/stop p)
     (io/puts "")

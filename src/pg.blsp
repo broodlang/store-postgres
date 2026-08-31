@@ -48,8 +48,8 @@
 (defn rows->maps (result)
   "Turn the driver's positional `{:columns :rows}` into a list of `{:col value…}`
   maps — the adaptor-contract row shape."
-  (let (cols (map keyword (get result :columns)))
-    (map (fn (row) (map/zipmap cols row)) (get result :rows))))
+  (let (cols (map (get result :columns) keyword))
+    (map (get result :rows) (fn (row) (map/zipmap cols row)))))
 
 ;; ---- environment / convenience helpers -------------------------------------
 
@@ -70,10 +70,10 @@
   of the statement."
   (str "\""
     (apply str
-      (map (fn (i)
-             (let (ch (string/substring name i (+ i 1)))
-               (if (= ch "\"") "\"\"" ch)))
-        (range (string/length name))))
+      (map (range (string/length name))
+        (fn (i)
+          (let (ch (string/substring name i (+ i 1)))
+            (if (= ch "\"") "\"\"" ch)))))
     "\""))
 
 (defn create-database (opts)

@@ -50,7 +50,7 @@
 
 (defn bytes->bytestr (bv)
   "Byte vector → byte string (one codepoint per byte). For outbound assembly."
-  (apply str (map byte->char bv)))
+  (apply str (map bv byte->char)))
 
 (defn bytestr->bytes (s)
   "Byte string → byte vector of ints 0–255. For `carrier->bytes` / `crypto`. The carrier
@@ -63,7 +63,7 @@
 
 (defn utf8-bytestr (s)
   "UTF-8-encode text `s` into a byte string (one codepoint 0–255 per UTF-8 byte)."
-  (apply str (map byte->char (string/->bytes s))))
+  (apply str (map (string/->bytes s) byte->char)))
 
 (defn bytestr->utf8 (s)
   "Decode a byte string holding UTF-8 back into text."
@@ -123,8 +123,7 @@
   `next-off` is just past the NUL."
   (read-cstring-scan s off off))
 
-(defn- read-cstring-scan
-  (s start i)
+(defn- read-cstring-scan (s start i)
   (if (= (octet-at s i) 0)
     [(slice->utf8 s start i) (+ i 1)]
     (read-cstring-scan s start (+ i 1))))
@@ -133,4 +132,4 @@
 
 (defn xor-bytes (a b)
   "XOR two equal-length byte vectors → byte vector."
-  (into [] (map (fn (i) (bit/xor (get a i) (get b i))) (range (count a)))))
+  (into [] (map (range (count a)) (fn (i) (bit/xor (get a i) (get b i))))))

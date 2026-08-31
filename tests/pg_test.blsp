@@ -9,5 +9,4 @@
   (test "an embedded double-quote is doubled — the name can't break out of the quotes"
     (is (= (pg/quote-identifier "a\"b") "\"a\"\"b\"")))
   (test "an injection attempt is neutralised into one quoted identifier"
-    (is (= (pg/quote-identifier "x\"; DROP DATABASE y; --")
-          "\"x\"\"; DROP DATABASE y; --\""))))
+    (is (= (pg/quote-identifier "x\"; DROP DATABASE y; --") "\"x\"\"; DROP DATABASE y; --\""))))

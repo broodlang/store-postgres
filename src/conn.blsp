@@ -86,9 +86,7 @@
   "MD5: 'md5' ++ md5hex( md5hex(password ++ user) ++ salt-bytes ). `salt` is the 4-byte
   `bytes` slice from the AuthenticationMD5Password message."
   (let (inner (md5 (str (get conn :password) (get conn :user)))
-        outer (md5-bytes (into []
-                           (append (string/->bytes inner)
-                             (seq salt)))))
+        outer (md5-bytes (into [] (append (string/->bytes inner) (seq salt)))))
     (send-message (get conn :sock) (password-message (str "md5" outer)))
     (handshake conn)))
 
@@ -178,7 +176,7 @@
   accumulated head-first (`add-row` conses — O(1) — rather than appending to a
   fixed-length vector, which copies), so reverse once here into the public vector."
   (assoc acc
-    :columns (into [] (map (fn (c) (get c :name)) cols))
+    :columns (into [] (map cols (fn (c) (get c :name))))
     :rows (into [] (reverse (get acc :rows)))))
 
 (defn add-row (acc cols body)
@@ -255,8 +253,7 @@
       (rd-fields body
         (+ name-end 18)
         (- n 1)
-        (cons {:name (get r 0)
-               :type-oid (read-int32 body (+ name-end 6))}
+        (cons {:name (get r 0) :type-oid (read-int32 body (+ name-end 6))}
           acc)))))
 
 (defn decode-row (body cols)

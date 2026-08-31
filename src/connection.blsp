@@ -72,9 +72,10 @@
         (let (err (get outcome :err))
           (send from [:reply r [:error err]])
           (serve-loop (get err :conn)))
-      else (let (err (get outcome :err))
-             (send from [:reply r [:error err]])
-             (throw err)))))
+      else
+        (let (err (get outcome :err))
+          (send from [:reply r [:error err]])
+          (throw err)))))
 
 ;; ---- client API (returns [:ok result] | [:error err]) -----------------------
 

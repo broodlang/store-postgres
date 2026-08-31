@@ -61,9 +61,9 @@
     (str (cstring portal)
       (cstring statement)
       (int16-be (count params))
-      (apply str (map types/param-format-code params)) ; N format codes, one per param
+      (apply str (map params types/param-format-code)) ; N format codes, one per param
       (int16-be (count params))
-      (apply str (map types/encode-param params))
+      (apply str (map params types/encode-param))
       (int16-be 0)))) ; result format codes: 0 ⇒ all text
 (defn describe-message (kind name)
   "Describe ('D'): `kind` is \"S\" (statement) or \"P\" (portal). Describing a portal
