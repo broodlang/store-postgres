@@ -40,7 +40,7 @@
                       (query/select [:name])
                       (query/where [:in :id [1 3]])
                       (query/order-by :id))))
-        (is (= (map (fn (m) (get m :name)) names) (list "ada" "alan"))))
+        (is (= (map names (fn (m) (get m :name))) (list "ada" "alan"))))
       (repo/close r)))
 
   (test "insert / update / delete via the repo (data-driven, RETURNING)"
@@ -177,8 +177,7 @@
                  :tags))
         (is (= (count (get (first ps) :tags)) 2))
         (is (= (count (get (second ps) :tags)) 1))
-        (is (= (sort (map (fn (t) (get t :name)) (get (first ps) :tags)))
-              (list "elixir" "lisp")))
+        (is (= (sort (map (get (first ps) :tags) (fn (t) (get t :name)))) (list "elixir" "lisp")))
         (is (= (get (first (get (second ps) :tags)) :name) "sql")))
       (repo/close r)))
 
@@ -196,8 +195,8 @@
       ;; migrate to v2: ADD balance (no drop by default)
       (repo/migrate r v2)
       (let (cols (repo/columns r v2))
-        (is (= (sort (map ->string cols)) (list "balance" "gone" "id" "name"))))
+        (is (= (sort (map cols ->string)) (list "balance" "gone" "id" "name"))))
       ;; opt in to dropping the column gone from the schema
       (repo/migrate r v2 {:drop true})
-      (is (= (sort (map ->string (repo/columns r v2))) (list "balance" "id" "name")))
+      (is (= (sort (map (repo/columns r v2) ->string)) (list "balance" "id" "name")))
       (repo/close r))))

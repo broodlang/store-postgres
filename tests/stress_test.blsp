@@ -27,7 +27,7 @@
 
 (defn rep (unit n)
   "A string of `unit` repeated `n` times."
-  (apply str (map (fn (_) unit) (range n))))
+  (apply str (map (range n) (fn (_) unit))))
 
 (defn value-of (rows key)
   "The `key` field of the single returned row-map (repo/exec yields a list of maps)."
@@ -59,8 +59,7 @@
 (describe "high bytes (>= 0x80) reach the wire and return byte-faithful"
   :isolated (test "a non-ASCII literal in the SQL text (simple protocol)"
     (let (r (repo/open (pg/adaptor) (opts)))
-      (is (= (value-of (repo/exec r "SELECT 'café — 日本語 — 🌼'::text AS v" []) :v)
-            "café — 日本語 — 🌼"))
+      (is (= (value-of (repo/exec r "SELECT 'café — 日本語 — 🌼'::text AS v" []) :v) "café — 日本語 — 🌼"))
       (repo/close r)))
 
   (test "non-ASCII bound params (extended protocol), short and long"
@@ -102,10 +101,10 @@
 (describe "sustained sequential round-trips stay in sync"
   :isolated (test "2000 parameterized queries on one connection each return the right value"
     (let (r (repo/open (pg/adaptor) (opts))
-          all-ok (reduce (fn (acc i)
-                           (and acc (= (value-of (repo/exec r "SELECT $1::int AS n" [i]) :n) i)))
+          all-ok (reduce (range 2000)
                    true
-                   (range 2000)))
+                   (fn (acc i)
+                     (and acc (= (value-of (repo/exec r "SELECT $1::int AS n" [i]) :n) i)))))
       (is (= all-ok true))
       (repo/close r))))
 
@@ -120,7 +119,8 @@
       (dolist (w (range workers))
         (spawn
           (fn ()
-            (let (ok (reduce
+            (let (ok (reduce (range per-worker)
+                       true
                        (fn (acc i)
                          ;; payload length varies 90..209, straddling the 128
                          ;; boundary while many connections send in parallel
@@ -132,13 +132,9 @@
                                          (rep "z" (+ 90 (math/mod (* (+ w 1) (+ i 1)) 120)))))
                            (and acc
                              (= (value-of (repo/exec r "SELECT $1::text AS v" [payload]) :v)
-                               payload))))
-                       true
-                       (range per-worker)))
+                               payload))))))
               (send parent [:done ok])))))
-      (let (all-ok (reduce (fn (acc _) (and acc (receive ([:done ok] ok))))
-                     true
-                     (range workers)))
+      (let (all-ok (reduce (range workers) true (fn (acc _) (and acc (receive ([:done ok] ok))))))
         (is (= all-ok true)))
       (repo/close r))))
 
@@ -157,8 +153,6 @@
       (dolist (c (range clients))
         (spawn (fn ()
                  (send parent [:done (= (value-of (repo/exec r "SELECT $1::int AS n" [c]) :n) c)]))))
-      (let (all-ok (reduce (fn (acc _) (and acc (receive ([:done ok] ok))))
-                     true
-                     (range clients)))
+      (let (all-ok (reduce (range clients) true (fn (acc _) (and acc (receive ([:done ok] ok))))))
         (is (= all-ok true)))
       (repo/close r))))

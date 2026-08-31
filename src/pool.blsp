@@ -34,18 +34,13 @@
       (send parent [:start-failed r (get outcome :error)])
       (let (pids (get outcome :pids)
             pool (self))
-        (map monitor pids)
+        (map pids monitor)
         ;; Self-heal: a ticker nudges the pool to replace any connections it couldn't
         ;; respawn immediately (e.g. the DB was unreachable when they died), so the pool
         ;; recovers on its own once the DB is back — no app restart (see `:replenish`).
         (spawn (replenish-ticker pool))
         (send parent [:started r])
-        (run {:opts opts
-              :size size
-              :members pids
-              :free pids
-              :waiters no-waiters
-              :borrowed {}})))))
+        (run {:opts opts :size size :members pids :free pids :waiters no-waiters :borrowed {}})))))
 
 ;; How often the pool retries reconnecting while below its target size.
 (def *replenish-ms* 5000)
@@ -63,11 +58,11 @@
   n of them. Spawn all, then collect each `[:started]`."
   (let (parent (self)
         pairs (into []
-                (map (fn (i)
-                       (let (cr (ref))
-                         {:ref cr :pid (spawn (connection/boot opts parent cr))}))
-                  (range n))))
-    (into [] (map await-started pairs))))
+                (map (range n)
+                  (fn (i)
+                    (let (cr (ref))
+                      {:ref cr :pid (spawn (connection/boot opts parent cr))})))))
+    (into [] (map pairs await-started))))
 
 (defn await-started (p)
   (let (cr (get p :ref)
@@ -84,8 +79,7 @@
                             (run (hand-out (assoc state :free (rest-v free)) (first free) from r)))))
     ([:checkin pid]
       ;; accept only a live member that isn't already free (ignore dead/double checkin)
-      (if (and (includes? (get state :members) pid)
-            (not (includes? (get state :free) pid)))
+      (if (and (includes? (get state :members) pid) (not (includes? (get state :free) pid)))
         (run (give-back state pid))
         (run state)))
     ([:down m pid reason]
@@ -99,7 +93,7 @@
           (if (nil? conn) (run state) (run (give-back state conn))))))
     ;; Periodic self-heal: replace connections while below target size.
     ([:replenish] (run (maybe-replenish state)))
-    ([:stop from r] (map connection/stop (get state :members))
+    ([:stop from r] (map (get state :members) connection/stop)
       (send from [:reply r :ok]))))
 
 (defn hand-out (state pid borrower r)
@@ -117,7 +111,7 @@
 
 (defn conn-of-borrower (borrowed borrower)
   "The connection pid `borrower` currently holds, or nil."
-  (fold (fn (acc k) (if (= (get (get borrowed k) :by) borrower) k acc)) nil (keys borrowed)))
+  (fold (keys borrowed) nil (fn (acc k) (if (= (get (get borrowed k) :by) borrower) k acc))))
 
 (defn maybe-replenish (state)
   "If the pool is below its target size, try to open one connection back. A no-op when
@@ -154,7 +148,7 @@
 (defn rest-v (v) (into [] (rest v)))
 
 (defn remove-pid (v pid)
-  (into [] (filter (fn (x) (not (= x pid))) v)))
+  (into [] (filter v (fn (x) (not (= x pid))))))
 
 (defn remove-conn (state pid)
   (assoc state
