@@ -57,7 +57,18 @@
             (throw {:store-error :auth
                     :message "store: scram: server nonce does not extend client nonce"}))
         salt (base64-decode-bytes (attr parts "s"))
-        iters (string/->number (attr parts "i"))
+        ;; `i=` is whatever the server sent. Unparseable, it made `string/->number` answer a
+        ;; FAILURE, which `pbkdf2` then raised on — an unhandled error out of the auth path,
+        ;; where the nonce check two lines up already shows what this should look like.
+        ;; Absent entirely, it was `(string/->number nil)`, a bare type error. Validated
+        ;; where it is produced, so `iters` below is an int and nothing downstream re-asks.
+        iters (let (raw (attr parts "i")
+                    n (if (string? raw) (string/->number raw) nil))
+                (if (int? n)
+                  n
+                  (throw {:store-error :auth
+                          :message (str "store: scram: server sent no usable iteration "
+                                     "count (i=" raw ")")})))
         salted (pbkdf2 (get state :password) salt iters 32)
         client-key (hmac-sha256-raw salted (s->bv "Client Key"))
         stored-key (sha256-raw client-key)
