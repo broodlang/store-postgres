@@ -101,16 +101,31 @@
 
 (defn read-int32 (s off)
   "Read an unsigned 32-bit big-endian int at byte offset `off` of `s` (a `bytes` value or
-  byte-string — see `octet-at`)."
-  (+ (* (octet-at s off) 16777216)
-    (* (octet-at s (+ off 1)) 65536)
-    (* (octet-at s (+ off 2)) 256)
-    (octet-at s (+ off 3))))
+  byte-string — see `octet-at`).
+
+  The `bytes` case is spelled out rather than going through `octet-at` four times. This is
+  the single hottest reader in the driver — once per column plus once per frame, so a
+  thousand-row result calls it thousands of times — and `octet-at` re-asks `bytes?` on every
+  one of those calls to pick a branch that cannot change within a single read. Hoisting that
+  question out of the loop is the whole optimisation; the byte-string arm is untouched and
+  still shared."
+  (if (bytes? s)
+    (+ (* (get s off) 16777216)
+      (* (get s (+ off 1)) 65536)
+      (* (get s (+ off 2)) 256)
+      (get s (+ off 3)))
+    (+ (* (octet-at s off) 16777216)
+      (* (octet-at s (+ off 1)) 65536)
+      (* (octet-at s (+ off 2)) 256)
+      (octet-at s (+ off 3)))))
 
 (defn read-int16 (s off)
   "Read an unsigned 16-bit big-endian int at byte offset `off` of `s` (a `bytes` value or
-  byte-string — see `octet-at`)."
-  (+ (* (octet-at s off) 256) (octet-at s (+ off 1))))
+  byte-string — see `octet-at`). The `bytes` fast path is spelled out for the same reason as
+  `read-int32`'s."
+  (if (bytes? s)
+    (+ (* (get s off) 256) (get s (+ off 1)))
+    (+ (* (octet-at s off) 256) (octet-at s (+ off 1)))))
 
 ;; ---- C strings (NUL-terminated) ---------------------------------------------
 
