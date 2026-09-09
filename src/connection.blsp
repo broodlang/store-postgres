@@ -70,7 +70,12 @@
           (serve-loop (get res 1)))
       (= (get (get outcome :err) :store-error) :query)
         (let (err (get outcome :err))
-          (send from [:reply r [:error err]])
+          ;; `:conn` is stripped before the error leaves this process. It is attached so THIS
+          ;; loop can keep serving on the drained connection, which is done by the line below;
+          ;; nothing downstream reads it. Sent on, it travels to the caller and into whatever
+          ;; logs or renders the error — and a conn carries the socket, the read buffer, the
+          ;; prepared-statement cache, and the SCRAM state including the database password.
+          (send from [:reply r [:error (dissoc err :conn)]])
           (serve-loop (get err :conn)))
       else
         (let (err (get outcome :err))

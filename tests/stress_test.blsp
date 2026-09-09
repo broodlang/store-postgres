@@ -228,3 +228,22 @@
                     (fn (i) (value-of (repo/exec r (str "SELECT " i " AS n, $1::int AS p") [i]) :n))))
       (is (= results (seq (range 80))))
       (repo/close r))))
+
+;; ---- errors carry no connection state ---------------------------------------
+
+(describe "a query error does not carry the connection out of the driver"
+  :isolated (test "no socket, buffer, statement cache or SCRAM password rides on the error"
+    ;; `:conn` is attached inside the connection process so it can keep serving on the
+    ;; drained connection, and stripped before the error is sent on. A conn carries the
+    ;; SCRAM state — including the database password — so an uncaught query error used to
+    ;; print it wherever the error was rendered.
+    (let (r (repo/open (pg/adaptor) (opts))
+          err (check-allow :discarded-catch
+                (try (repo/exec r "SELECT * FROM sp_definitely_no_such_table" []) (catch e e))))
+      (is (= (get err :store-error) :query))
+      (is (nil? (get err :conn)))
+      (is (not (includes? (str err) "scram")))
+      (is (not (includes? (str err) (get (opts) :password))))
+      ;; the message a caller actually needs is still there
+      (is (includes? (get err :message) "sp_definitely_no_such_table"))
+      (repo/close r))))
