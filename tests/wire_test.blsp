@@ -16,9 +16,15 @@
     (is (= (read-int16 (int16-be 65535) 0) 65535))
     (is (= (read-int16 (int16-be 1) 0) 1)))
   (test "cstring writes a NUL terminator and reads back"
-    (let (s (cstring "user"))
-      (is (= (string/length s) 5))
+    ;; `cstring` answers an iolist now — the NUL is a byte leaf, and the text is UTF-8
+    ;; encoded by the flatten rather than walked here.
+    (let (s (iolist->bytes (cstring "user")))
+      (is (= (bytes/length s) 5))
       (is (= (read-cstring s 0) ["user" 5]))))
+  (test "a cstring's length is its UTF-8 byte count, not its codepoint count"
+    (let (s (iolist->bytes (cstring "café")))
+      (is (= (bytes/length s) 6)) ; 5 UTF-8 bytes + NUL
+      (is (= (read-cstring s 0) ["café" 6]))))
   (test "xor-bytes combines two equal-length vectors"
     (is (= (xor-bytes [1 2 3] [1 1 1]) [0 3 2]))))
 

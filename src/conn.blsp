@@ -13,6 +13,25 @@
   (:alias wire/types)
   (:alias wire/scram))
 
+;; ---- backend message types --------------------------------------------------
+;; The type byte each backend message opens with. Named because `read-frame` answers the
+;; raw byte: dispatching on an int is a compare, where the 1-char string it used to answer
+;; cost an allocation per frame plus a walk down a chain of string comparisons.
+(def +msg-auth+ 82) ; R  Authentication*
+(def +msg-param+ 83) ; S  ParameterStatus
+(def +msg-backend-key+ 75) ; K  BackendKeyData
+(def +msg-notice+ 78) ; N  NoticeResponse
+(def +msg-ready+ 90) ; Z  ReadyForQuery
+(def +msg-error+ 69) ; E  ErrorResponse
+(def +msg-row-desc+ 84) ; T  RowDescription
+(def +msg-data-row+ 68) ; D  DataRow
+(def +msg-command-done+ 67) ; C  CommandComplete
+(def +msg-parse-done+ 49) ; 1  ParseComplete
+(def +msg-bind-done+ 50) ; 2  BindComplete
+(def +msg-close-done+ 51) ; 3  CloseComplete
+(def +msg-param-desc+ 116) ; t  ParameterDescription
+(def +msg-no-data+ 110) ; n  NoData
+(def +msg-portal-suspended+ 115) ; s  PortalSuspended
 ;; ---- errors -----------------------------------------------------------------
 
 (defn fail (kind message)
@@ -28,8 +47,8 @@
   `tcp/send` emits it verbatim. Since ADR-141, `tcp/send` UTF-8-encodes a *string*
   leaf — which would re-encode every wire byte ≥ 0x80 (a message's Int32 length prefix
   once it reaches 128 bytes, or any high body byte) into two bytes and desync the
-  server. See wire/bytes/carrier->bytes."
-  (tcp/send sock (carrier->bytes message)))
+  server. See wire/bytes/iolist->bytes."
+  (tcp/send sock (iolist->bytes message)))
 
 ;; ---- connect + handshake ----------------------------------------------------
 
@@ -56,12 +75,12 @@
         body (get f 1)
         conn (get f 2))
     (cond
-      (= type "R") (handle-auth conn body)
-      (= type "S") (handshake (record-param conn body))
-      (= type "K") (handshake conn) ; BackendKeyData — for cancellation; ignore here
-      (= type "N") (handshake conn) ; NoticeResponse
-      (= type "Z") conn ; ReadyForQuery — handshake complete
-      (= type "E") (fail :auth (error-text body))
+      (= type +msg-auth+) (handle-auth conn body)
+      (= type +msg-param+) (handshake (record-param conn body))
+      (= type +msg-backend-key+) (handshake conn) ; for cancellation; ignore here
+      (= type +msg-notice+) (handshake conn)
+      (= type +msg-ready+) conn ; handshake complete
+      (= type +msg-error+) (fail :auth (error-text body))
       else (handshake conn))))
 
 ;; ---- authentication ---------------------------------------------------------
@@ -127,11 +146,11 @@
   parses an unnamed statement, binds, describes the portal (to learn result types),
   executes, and syncs. Returns `[result conn']` like `query`."
   (send-message (get conn :sock)
-    (str (parse-message "" sql)
+    [(parse-message "" sql)
       (bind-message "" "" params)
       (describe-message "P" "")
       (execute-message "" 0)
-      (sync-message)))
+      (sync-message)])
   (collect conn {:columns [] :rows (list)} []))
 
 (defn collect (conn acc cols)
@@ -142,20 +161,19 @@
         type (get f 0)
         body (get f 1)
         conn (get f 2))
+    ;; Ordered by how often a result stream actually carries each frame: a DataRow per row,
+    ;; then the three that close every query. The rest are one-offs or acknowledgements and
+    ;; fall through to the shared `else`, which continues exactly as they each did.
     (cond
-      (= type "T") (collect conn acc (parse-row-description body))
-      (= type "D") (collect conn (add-row acc cols body) cols)
-      (= type "C") (collect conn acc cols) ; CommandComplete
-      (= type "Z") [(finalize acc cols) conn] ; ReadyForQuery — done
-      (= type "E") (collect-error conn body cols)
-      (= type "1") (collect conn acc cols) ; ParseComplete
-      (= type "2") (collect conn acc cols) ; BindComplete
-      (= type "3") (collect conn acc cols) ; CloseComplete
-      (= type "t") (collect conn acc cols) ; ParameterDescription
-      (= type "n") (collect conn acc cols) ; NoData
-      (= type "s") (collect conn acc cols) ; PortalSuspended
-      (= type "N") (collect conn acc cols) ; NoticeResponse
-      (= type "S") (collect conn acc cols) ; ParameterStatus mid-stream
+      (= type +msg-data-row+) (collect conn (add-row acc cols body) cols)
+      (= type +msg-ready+) [(finalize acc cols) conn] ; done
+      (= type +msg-row-desc+) (collect conn acc (parse-row-description body))
+      (= type +msg-command-done+) (collect conn acc cols)
+      (= type +msg-error+) (collect-error conn body cols)
+      ;; ParseComplete / BindComplete / CloseComplete / ParameterDescription / NoData /
+      ;; PortalSuspended / NoticeResponse / a mid-stream ParameterStatus — nothing to record,
+      ;; keep reading. An unknown type is skipped for the same reason: the stream is still
+      ;; framed correctly, and ReadyForQuery ends it.
       else (collect conn acc cols))))
 
 (defn collect-error (conn body cols)
@@ -169,7 +187,7 @@
 (defn drain-to-ready (conn)
   (let (f (read-frame conn)
         conn (get f 2))
-    (if (= (get f 0) "Z") conn (drain-to-ready conn))))
+    (if (= (get f 0) +msg-ready+) conn (drain-to-ready conn))))
 
 (defn finalize (acc cols)
   "Project the column descriptors down to names and restore row order. Rows were
@@ -190,14 +208,19 @@
 
 (defn read-frame (conn)
   "Pull one complete backend message. Returns `[type body conn']` where `type` is
-  the 1-char message type, `body` the message body (a `bytes` slice, length field
-  stripped), and `conn'` the conn with its read offset advanced past the consumed frame.
+  the message-type BYTE (see the `+msg-*+` constants), `body` the message body (a `bytes`
+  slice, length field stripped), and `conn'` the conn with its read offset advanced past
+  the consumed frame.
+
+  The type is an int and not a 1-char string because every caller DISPATCHES on it: a
+  string cost an allocation per frame and then a chain of up to thirteen string
+  comparisons, and a trivial query is six frames.
   The buffer is a `bytes` value read in place: advancing a plain `:off` (rather than
   re-slicing the tail each frame) keeps decoding a large result O(rows) not O(rows²)."
   (let (conn (fill-to conn 5)
         buf (get conn :buf)
         off (get conn :off)
-        type (byte->char (bytes/at buf off))
+        type (bytes/at buf off)
         total (+ 1 (read-int32 buf (+ off 1)))
         conn (fill-to conn total)
         ;; fill-to may have compacted the buffer, resetting :off — re-read both
