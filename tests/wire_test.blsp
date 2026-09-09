@@ -53,6 +53,16 @@
     (let (st (continue (start "user" "pencil" *client-nonce*) *server-first*))
       (is (= (first (finish st "v=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")) :error))))
 
+  ;; `i=` was already validated into a clean protocol error; `s=` was not, and reached
+  ;; `base64-decode-bytes` as nil.
+  (test "a server-first with no salt is a clean auth error, not a type error"
+    (let (thrown (try
+                   (continue (start "user" "pencil" *client-nonce*)
+                     (str "r=" *client-nonce* "%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,i=4096"))
+                   (catch e e)))
+      (is (= (get thrown :store-error) :auth))
+      (is (includes? (get thrown :message) "no salt"))))
+
   (test "a server nonce that doesn't extend the client nonce is rejected (RFC 5802 §5.1)"
     (let (st (start "user" "pencil" *client-nonce*))
       (is (= (first (try

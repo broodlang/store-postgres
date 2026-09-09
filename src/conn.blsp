@@ -70,10 +70,7 @@
 (defn handshake (conn)
   "Read backend messages until ReadyForQuery ('Z'), handling auth challenges and
   recording server parameters along the way."
-  (let (f (read-frame conn)
-        type (get f 0)
-        body (get f 1)
-        conn (get f 2))
+  (let ([type body conn] (read-frame conn))
     (cond
       (= type +msg-auth+) (handle-auth conn body)
       (= type +msg-param+) (handshake (record-param conn body))
@@ -157,10 +154,7 @@
   "Drive the result stream until ReadyForQuery, decoding each DataRow with the column
   types from the preceding RowDescription. `cols` is the current column descriptor
   list (`[{:name :type-oid} …]`)."
-  (let (f (read-frame conn)
-        type (get f 0)
-        body (get f 1)
-        conn (get f 2))
+  (let ([type body conn] (read-frame conn))
     ;; Ordered by how often a result stream actually carries each frame: a DataRow per row,
     ;; then the three that close every query. The rest are one-offs or acknowledgements and
     ;; fall through to the shared `else`, which continues exactly as they each did.
@@ -185,9 +179,8 @@
     (throw {:store-error :query :message (str "store: " message) :conn conn})))
 
 (defn drain-to-ready (conn)
-  (let (f (read-frame conn)
-        conn (get f 2))
-    (if (= (get f 0) +msg-ready+) conn (drain-to-ready conn))))
+  (let ([type _body conn] (read-frame conn))
+    (if (= type +msg-ready+) conn (drain-to-ready conn))))
 
 (defn finalize (acc cols)
   "Project the column descriptors down to names and restore row order. Rows were
@@ -257,9 +250,9 @@
 
 (defn record-param (conn body)
   "ParameterStatus ('S'): name CString, value CString → record in conn :params."
-  (let (r1 (read-cstring body 0)
-        r2 (read-cstring body (get r1 1)))
-    (assoc conn :params (assoc (get conn :params) (get r1 0) (get r2 0)))))
+  (let ([name after-name] (read-cstring body 0)
+        [value _end] (read-cstring body after-name))
+    (assoc conn :params (assoc (get conn :params) name value))))
 
 (defn parse-row-description (body)
   "RowDescription ('T'): Int16 field count, then per field a name CString followed by
@@ -271,13 +264,14 @@
 (defn rd-fields (body off n acc)
   (if (= n 0)
     acc
-    (let (r (read-cstring body off)
-          name-end (get r 1))
+    ;; Destructured, not `get`-indexed: a tuple pattern tells the checker each element's
+    ;; type, where `(get r 1)` widens to `nil | int | string` and every arithmetic use of
+    ;; the offset downstream then reads as possibly-not-an-int.
+    (let ([name name-end] (read-cstring body off))
       (rd-fields body
         (+ name-end 18)
         (- n 1)
-        (cons {:name (get r 0) :type-oid (read-int32 body (+ name-end 6))}
-          acc)))))
+        (cons {:name name :type-oid (read-int32 body (+ name-end 6))} acc)))))
 
 (defn decode-row (body cols)
   "DataRow ('D'): Int16 column count, then per column an Int32 length (-1 = NULL) and
@@ -314,8 +308,9 @@
   (if (= (bytes/at body off) 0)
     acc
     (let (code (byte->char (bytes/at body off))
-          r (read-cstring body (+ off 1)))
-      (error-fields body (get r 1) (assoc acc code (get r 0))))))
+          [text next-off] (read-cstring body (+ off 1)))
+      (error-fields body next-off (assoc acc code text)))))
+(sig error-fields (bytes int map -> map))
 
 ;; ---- teardown ---------------------------------------------------------------
 

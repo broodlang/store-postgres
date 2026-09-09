@@ -117,11 +117,13 @@
   "Read a NUL-terminated string starting at `off`. Returns `[text next-off]` where
   `next-off` is just past the NUL."
   (read-cstring-scan s off off))
+(sig read-cstring (bytes int -> (tuple string int)))
 
 (defn- read-cstring-scan (s start i)
   (if (= (octet-at s i) 0)
     [(slice->utf8 s start i) (+ i 1)]
     (read-cstring-scan s start (+ i 1))))
+(sig read-cstring-scan (bytes int int -> (tuple string int)))
 
 ;; ---- byte-vector XOR (SCRAM's client proof; no stdlib equivalent) -----------
 

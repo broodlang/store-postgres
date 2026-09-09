@@ -56,7 +56,14 @@
             nil
             (throw {:store-error :auth
                     :message "store: scram: server nonce does not extend client nonce"}))
-        salt (base64-decode-bytes (attr parts "s"))
+        ;; `s=` gets the same treatment as `i=` below: absent, it was
+        ;; `(base64-decode-bytes nil)` — a bare type error out of the auth path, where a
+        ;; server that sends no salt deserves the same clean protocol error as one that
+        ;; sends no iteration count.
+        salt (let (raw (attr parts "s"))
+               (if (string? raw)
+                 (base64-decode-bytes raw)
+                 (throw {:store-error :auth :message "store: scram: server sent no salt (s=)"})))
         ;; `i=` is whatever the server sent. Unparseable, it made `string/->number` answer a
         ;; FAILURE, which `pbkdf2` then raised on — an unhandled error out of the auth path,
         ;; where the nonce check two lines up already shows what this should look like.
