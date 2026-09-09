@@ -60,12 +60,17 @@
         sock (tcp/connect host port))
     (tcp/set-binary sock true)
     (send-message sock (startup-message (get opts :user) (get opts :database)))
-    (handshake {:sock sock
-                :user (get opts :user)
-                :password (get opts :password)
-                :buf #b""
-                :off 0
-                :params {}})))
+    (handshake
+      {:sock sock
+       :user (get opts :user)
+       :password (get opts :password)
+       :buf #b""
+       :off 0
+       :params {}
+       ;; prepared statements are per-CONNECTION server state, so the cache that
+       ;; names them lives and dies with this map
+       :stmts {}
+       :next-stmt 0})))
 
 (defn handshake (conn)
   "Read backend messages until ReadyForQuery ('Z'), handling auth challenges and
@@ -135,32 +140,100 @@
   where `result` is `{:columns [name …] :rows [[value …] …]}` with values decoded to
   Brood types and NULL → nil."
   (send-message (get conn :sock) (query-message sql))
-  (collect conn {:columns [] :rows (list)} []))
+  (let ([result conn _cols] (collect conn {:columns [] :rows (list)} []))
+    [result conn]))
 
 (defn exec (conn sql params)
   "Run `sql` with bound `params` via the extended protocol — `$1`, `$2`, … are filled
-  from `params` (server-side, so values are never interpolated into SQL). One-shot:
-  parses an unnamed statement, binds, describes the portal (to learn result types),
-  executes, and syncs. Returns `[result conn']` like `query`."
+  from `params` (server-side, so values are never interpolated into SQL). Returns
+  `[result conn']` like `query`.
+
+  The statement is PREPARED on this connection the first time its text is seen and reused
+  by name afterwards, so a repeated query sends three messages instead of five (no Parse,
+  no Describe) and reads four frames instead of six — and Postgres skips its own parse and
+  plan. An application issues a small fixed set of statements, so after warm-up nearly every
+  query takes the reuse path.
+
+  A statement the server no longer holds is not an error the caller should see: `PREPARE` is
+  transactional, so a rollback discards statements prepared inside it, and DDL can
+  invalidate a cached plan. Both come back as a SQLSTATE this recognises, and the answer is
+  to forget every statement on this connection and Parse afresh — once. See `re-parse?`."
+  (let (cached (get (get conn :stmts) sql))
+    (if (nil? cached)
+      (exec-fresh conn sql params)
+      (try
+        (exec-prepared conn cached params)
+        (catch e
+          (if (re-parse? e)
+            (exec-fresh (assoc (get e :conn) :stmts {}) sql params)
+            (throw e)))))))
+
+;; How many prepared statements one connection will hold. An application's set of statements
+;; is small and fixed, so this is never reached in normal use; it is the backstop against SQL
+;; built by string interpolation, where every call is a new statement and an unbounded cache
+;; would grow the server's memory as well as ours. Past the cap `exec` keeps working on the
+;; unnamed-statement path, which is exactly what it did before any of this.
+(def *max-statements* 64)
+
+(defn re-parse? (e)
+  "Whether error `e` means *this connection must Parse this statement again*, rather than
+  the query being wrong.
+
+  `26000` invalid_sql_statement_name — the server does not have it: prepared inside a
+  transaction that rolled back, or a pooler reset the session. `0A000` is what Postgres
+  raises for `cached plan must not change result type`, after DDL changes a table the
+  statement reads. Anything else is the caller's problem and is re-thrown."
+  (and (= (get e :store-error) :query)
+    (includes? ["26000" "0A000"] (get e :code))))
+
+(defn exec-prepared (conn cached params)
+  "Bind and execute an already-prepared statement: no Parse, no Describe. The column
+  descriptors come from the cache because the server sends RowDescription only when asked,
+  and asking is one of the two messages this path exists to avoid."
   (send-message (get conn :sock)
-    [(parse-message "" sql)
-      (bind-message "" "" params)
-      (describe-message "P" "")
-      (execute-message "" 0)
-      (sync-message)])
-  (collect conn {:columns [] :rows (list)} []))
+    [(bind-message "" (get cached :name) params) (execute-message "" 0) (sync-message)])
+  (let ([result conn _cols] (collect conn {:columns [] :rows (list)} (get cached :cols)))
+    [result conn]))
+
+(defn exec-fresh (conn sql params)
+  "Parse `sql` as a named statement, describe it to learn its result columns, then bind and
+  execute — and remember the name and columns for next time.
+
+  `Describe(S)` and not `Describe(P)`: describing the STATEMENT is what yields descriptors
+  valid for every later execution, where describing the portal would only describe this one.
+  Past `*max-statements*` nothing is named or remembered and this is the original one-shot
+  unnamed-statement exchange."
+  (let (cache (get conn :stmts)
+        room? (< (count cache) *max-statements*)
+        n (get conn :next-stmt 0)
+        name (if room? (str "s" n) ""))
+    (send-message (get conn :sock)
+      [(parse-message name sql)
+        (describe-message "S" name)
+        (bind-message "" name params)
+        (execute-message "" 0)
+        (sync-message)])
+    (let ([result conn cols] (collect conn {:columns [] :rows (list)} []))
+      [result
+        (if room?
+          (assoc conn :stmts (assoc cache sql {:name name :cols cols}) :next-stmt (+ n 1))
+          conn)])))
 
 (defn collect (conn acc cols)
-  "Drive the result stream until ReadyForQuery, decoding each DataRow with the column
-  types from the preceding RowDescription. `cols` is the current column descriptor
-  list (`[{:name :type-oid} …]`)."
+  "Drive the result stream until ReadyForQuery. Returns `[result conn' cols]`.
+
+  `cols` is the current column descriptor list (`[{:name :type-oid} …]`) — passed IN so a
+  prepared statement can supply the descriptors it learned at Parse time (the server sends
+  RowDescription only when asked), and passed back OUT so that first execution can cache
+  them. `result` carries only the column NAMES, which is what a caller wants and not enough
+  to decode a later row."
   (let ([type body conn] (read-frame conn))
     ;; Ordered by how often a result stream actually carries each frame: a DataRow per row,
     ;; then the three that close every query. The rest are one-offs or acknowledgements and
     ;; fall through to the shared `else`, which continues exactly as they each did.
     (cond
       (= type +msg-data-row+) (collect conn (add-row acc cols body) cols)
-      (= type +msg-ready+) [(finalize acc cols) conn] ; done
+      (= type +msg-ready+) [(finalize acc cols) conn cols] ; done
       (= type +msg-row-desc+) (collect conn acc (parse-row-description body))
       (= type +msg-command-done+) (collect conn acc cols)
       (= type +msg-error+) (collect-error conn body cols)
@@ -173,10 +246,15 @@
 (defn collect-error (conn body cols)
   "An ErrorResponse mid-query: the server still sends ReadyForQuery after it, so
   drain to that first — then the connection stays usable. The drained conn rides on
-  the thrown error so a caught caller (the pool) can keep serving on it."
-  (let (message (error-text body)
+  the thrown error so a caught caller (the pool) can keep serving on it, and the SQLSTATE
+  rides with it so `exec` can tell a statement this connection must re-Parse from a query
+  that is simply wrong."
+  (let (fields (error-fields body 0 {})
         conn (drain-to-ready conn))
-    (throw {:store-error :query :message (str "store: " message) :conn conn})))
+    (throw {:store-error :query
+            :message (str "store: " (error-message fields))
+            :code (get fields "C")
+            :conn conn})))
 
 (defn drain-to-ready (conn)
   (let ([type _body conn] (read-frame conn))
@@ -298,11 +376,14 @@
 (defn error-text (body)
   "ErrorResponse ('E'): a series of (type byte, value CString) ended by a zero byte.
   Render the severity, message, and SQLSTATE."
-  (let (fields (error-fields body 0 {}))
-    (str (get fields "S" "ERROR")
-      ": "
-      (get fields "M" "(no message)")
-      (if (get fields "C") (str " [" (get fields "C") "]") ""))))
+  (error-message (error-fields body 0 {})))
+
+(defn error-message (fields)
+  "Render already-parsed ErrorResponse `fields` as one line."
+  (str (get fields "S" "ERROR")
+    ": "
+    (get fields "M" "(no message)")
+    (if (get fields "C") (str " [" (get fields "C") "]") "")))
 
 (defn error-fields (body off acc)
   (if (= (bytes/at body off) 0)

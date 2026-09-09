@@ -156,3 +156,75 @@
       (let (all-ok (reduce (range clients) true (fn (acc _) (and acc (receive ([:done ok] ok))))))
         (is (= all-ok true)))
       (repo/close r))))
+
+;; ---- prepared statement cache -----------------------------------------------
+;;
+;; `exec` prepares a statement the first time it sees its text and binds it by name after,
+;; so the interesting cases are the ones where the server stops holding what the cache
+;; names — a rollback discards statements prepared inside the transaction, and DDL
+;; invalidates a cached plan. Both must be invisible to the caller.
+
+(describe "a prepared statement is reused and still answers correctly"
+  :isolated (test "the same text with different params returns each param's own result"
+    (let (r (repo/open (pg/adaptor) (opts))
+          ;; the first call parses and names it; the rest bind it
+          results (map (range 50)
+                    (fn (i) (value-of (repo/exec r "SELECT $1::int AS n" [i]) :n)))
+          _ (repo/close r))
+      (is (= results (seq (range 50))))))
+
+  :isolated (test "a NULL binds on the reuse path, not just the first call"
+    (let (r (repo/open (pg/adaptor) (opts))
+          sql "SELECT $1::text AS v")
+      (is (= (value-of (repo/exec r sql ["first"]) :v) "first"))
+      (is (= (value-of (repo/exec r sql [nil]) :v) nil))
+      (is (= (value-of (repo/exec r sql ["third"]) :v) "third"))
+      (repo/close r))))
+
+(describe "a cached statement the server no longer holds is re-parsed, not raised"
+  :isolated (test "DDL that changes a result type is invisible to the caller"
+    (let (r (repo/open (pg/adaptor) (opts))
+          sql "SELECT * FROM sp_replan_t WHERE id = $1")
+      (repo/exec r "DROP TABLE IF EXISTS sp_replan_t" [])
+      (repo/exec r "CREATE TABLE sp_replan_t (id int, a text)" [])
+      (repo/exec r "INSERT INTO sp_replan_t VALUES (1, 'x')" [])
+      ;; parses and caches the statement, with two result columns
+      (is (= (value-of (repo/exec r sql [1]) :a) "x"))
+      ;; the cached plan's result type is now wrong — Postgres answers 0A000
+      (repo/exec r "ALTER TABLE sp_replan_t ADD COLUMN b int" [])
+      (repo/exec r "UPDATE sp_replan_t SET b = 7" [])
+      (let (row (first (repo/exec r sql [1])))
+        (is (= (get row :a) "x"))
+        (is (= (get row :b) 7))) ; the new column, so it really did re-Parse
+      (repo/exec r "DROP TABLE sp_replan_t" [])
+      (repo/close r)))
+
+  :isolated (test "a statement the session has deallocated is re-parsed"
+    ;; `DEALLOCATE ALL` drops protocol-level prepared statements, which is what a pooler
+    ;; resetting a session does to us — the cache then names statements the server does not
+    ;; have (SQLSTATE 26000). One connection, so the deallocate certainly lands on the
+    ;; connection holding the cache.
+    (let (r (repo/open (pg/adaptor) (assoc (opts) :size 1))
+          sql "SELECT $1::int AS n")
+      (is (= (value-of (repo/exec r sql [1]) :n) 1)) ; parses and caches it
+      (repo/exec r "DEALLOCATE ALL" [])
+      (is (= (value-of (repo/exec r sql [42]) :n) 42)) ; must re-Parse, not raise
+      (repo/close r)))
+
+  :isolated (test "a genuinely bad query still raises, and the connection keeps serving"
+    (let (r (repo/open (pg/adaptor) (opts))
+          thrown (check-allow :discarded-catch
+                   (try (repo/exec r "SELECT * FROM sp_no_such_table" []) (catch e e))))
+      (is (= (get thrown :store-error) :query))
+      (is (= (value-of (repo/exec r "SELECT 1 AS n" []) :n) 1))
+      (repo/close r))))
+
+(describe "the statement cache is bounded"
+  :isolated (test "past the cap queries still work, on the unnamed path"
+    ;; 80 distinct statement texts against a cap of 64 — the last 16 get no name and take
+    ;; the original one-shot exchange.
+    (let (r (repo/open (pg/adaptor) (assoc (opts) :size 1))
+          results (map (range 80)
+                    (fn (i) (value-of (repo/exec r (str "SELECT " i " AS n, $1::int AS p") [i]) :n))))
+      (is (= results (seq (range 80))))
+      (repo/close r))))
