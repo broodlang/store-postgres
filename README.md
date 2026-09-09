@@ -25,6 +25,27 @@ Depend on both `store` and `store-postgres`, then point `store`'s repo at the
 See `store`'s README for the query/insert/migration API; this package only
 supplies the driver and pool underneath it.
 
+## How the driver behaves
+
+**Statements are prepared once per connection.** The first time a connection sees a
+piece of SQL it Parses it as a named statement and remembers its result columns;
+later executions of the same text bind that name, which sends three protocol
+messages instead of five and reads four frames instead of six — and lets Postgres
+skip its own parse and plan. Two things follow:
+
+- **DDL is safe.** A cached plan invalidated by DDL, or a statement discarded by a
+  rolled-back transaction, comes back as a SQLSTATE the driver recognises; it
+  forgets the connection's statements and re-Parses once. Callers never see it.
+- **Build SQL with parameters, not interpolation.** The cache is keyed by statement
+  text and capped at 64 per connection. Text assembled per call — `(str "… WHERE id
+  = " id)` — is a new statement every time, which past the cap simply stops being
+  cached, but is worth avoiding for the injection reasons anyway. `$1` placeholders
+  are bound server-side.
+
+**The pool hands out the most recently used connection**, not the least. A run of
+queries stays on one connection rather than round-robining onto cold ones. Idle
+members are not stranded: every connection runs its own keepalive.
+
 ## Publishing
 
 Releases go to [hive](https://github.com/broodlang/hive), the Brood package
