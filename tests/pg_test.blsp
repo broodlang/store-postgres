@@ -10,3 +10,93 @@
     (is (= (pg/quote-identifier "a\"b") "\"a\"\"b\"")))
   (test "an injection attempt is neutralised into one quoted identifier"
     (is (= (pg/quote-identifier "x\"; DROP DATABASE y; --") "\"x\"\"; DROP DATABASE y; --\""))))
+
+(describe "opts-from-url parses what providers actually hand you"
+  (test "the full form"
+    (is (= (pg/opts-from-url "postgres://alice:secret@db.internal:5433/app")
+          {:host "db.internal"
+           :port 5433
+           :user "alice"
+           :password "secret"
+           :database "app"
+           :size 5})))
+
+  (test "postgresql:// is the same scheme"
+    (is (= (get (pg/opts-from-url "postgresql://u:p@h/d") :database) "d")))
+
+  (test "no port falls back to 5432"
+    (is (= (get (pg/opts-from-url "postgres://u:p@h/d") :port) 5432)))
+
+  (test "no credentials still finds the host — split on the LAST @, and there is none"
+    (let (opts (pg/opts-from-url "postgres://localhost/app"))
+      (is (= (get opts :host) "localhost"))
+      (is (= (get opts :user) "postgres"))
+      (is (= (get opts :password) ""))
+      (is (= (get opts :database) "app"))))
+
+  (test "a user with no password"
+    (let (opts (pg/opts-from-url "postgres://alice@h/d"))
+      (is (= (get opts :user) "alice"))
+      (is (= (get opts :password) ""))))
+
+  (test "no host falls back to the local default"
+    (is (= (get (pg/opts-from-url "postgres:///app") :host) "127.0.0.1")))
+
+  (test "no database falls back to the one the caller named"
+    (is (= (get (pg/opts-from-url "postgres://u:p@h" "fallback_db") :database) "fallback_db")))
+
+  (test "a query string is dropped — including the sslmode this driver cannot honour"
+    (is (= (get (pg/opts-from-url "postgres://u:p@h:5432/app?sslmode=require&pool=2")
+             :database)
+          "app")))
+
+  (test "a junk port falls back rather than becoming a truthy failure in the opts"
+    ;; `(or (string/->number "abc") 5432)` keeps the failure, and the socket layer then
+    ;; reports something about types instead of about the port.
+    (is (= (get (pg/opts-from-url "postgres://u:p@h:notaport/d") :port) 5432))))
+
+(describe "opts-from-url percent-decodes the credentials"
+  (test "an encoded / in the password — what a generated credential looks like"
+    (is (= (get (pg/opts-from-url "postgres://u:pa%2Fss@h/d") :password) "pa/ss")))
+
+  (test "an encoded @ in the password, and the host still comes from the last @"
+    (let (opts (pg/opts-from-url "postgres://u:pa%40ss@db.internal/d"))
+      (is (= (get opts :password) "pa@ss"))
+      (is (= (get opts :host) "db.internal"))))
+
+  (test "an encoded : in the password"
+    (is (= (get (pg/opts-from-url "postgres://u:pa%3Ass@h/d") :password) "pa:ss")))
+
+  (test "an encoded user"
+    (is (= (get (pg/opts-from-url "postgres://a%40b.com:p@h/d") :user) "a@b.com")))
+
+  (test "a literal % that is not an escape falls back to the raw text, never a failure"
+    ;; A failure value is TRUTHY, so an undecodable password would otherwise travel all
+    ;; the way into the connection attempt and fail somewhere unrelated to the cause.
+    (is (= (get (pg/opts-from-url "postgres://u:100%pure@h/d") :password) "100%pure")))
+
+  (test "a password needing no decoding is unchanged"
+    (is (= (get (pg/opts-from-url "postgres://u:plain-secret@h/d") :password) "plain-secret"))))
+
+(describe "port-or-default"
+  (test "a numeric string parses" (is (= (pg/port-or-default "5433") 5433)))
+  (test "nil falls back" (is (= (pg/port-or-default nil) 5432)))
+  (test "empty falls back" (is (= (pg/port-or-default "") 5432)))
+  (test "junk falls back" (is (= (pg/port-or-default "abc") 5432)))
+  (test "a float is not a port" (is (= (pg/port-or-default "5432.5") 5432))))
+
+(describe "split-last finds the credential boundary"
+  (test "no separator leaves the whole string on the right"
+    (is (= (pg/split-last "localhost/app" "@") ["" "localhost/app"])))
+  (test "one separator splits around it"
+    (is (= (pg/split-last "u:p@h/d" "@") ["u:p" "h/d"])))
+  (test "several separators split at the LAST — a password may contain one"
+    (is (= (pg/split-last "u:p@ss@h/d" "@") ["u:p@ss" "h/d"]))))
+
+(describe "opts reads whichever convention the host uses"
+  (test "no DATABASE_URL falls back to the $PG* vars"
+    ;; This suite runs with no DATABASE_URL set, so `opts` must take the env path and
+    ;; answer the same thing `opts-from-env` does.
+    (is (= (pg/opts "some_db") (pg/opts-from-env "some_db"))))
+  (test "the $PG* path defaults the port to a number, not a failure"
+    (is (= (int? (get (pg/opts-from-env "some_db") :port)) true))))

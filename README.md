@@ -25,6 +25,29 @@ Depend on both `store` and `store-postgres`, then point `store`'s repo at the
 See `store`'s README for the query/insert/migration API; this package only
 supplies the driver and pool underneath it.
 
+### Connection options from the environment
+
+`pg/opts` reads whichever convention the host uses — `$DATABASE_URL` when it is
+set (Fly, Render, Heroku, Neon, Supabase), else the `$PG*` vars every local tool
+follows — so the same build runs in both places:
+
+```brood
+(pg/opts "myapp")                                  ; $DATABASE_URL, else $PG*
+(pg/opts-from-url "postgres://u:p@host:5432/myapp") ; just the URL
+(pg/opts-from-env "myapp")                          ; just the $PG* vars
+```
+
+`opts-from-url` **percent-decodes the userinfo**, which is the part a
+hand-rolled parser gets wrong: providers URL-encode reserved characters there,
+so a generated password containing `/` or `@` arrives as `%2F` / `%40` and,
+used verbatim, produces a password error that looks exactly like a wrong
+password.
+
+A query string is ignored, and `sslmode` with it — this driver speaks plaintext
+Postgres, so a managed database reachable only over TLS needs a proxy in front
+of it rather than this URL. Over a private network (Fly 6PN, a Docker network)
+there is nothing to arrange.
+
 ## How the driver behaves
 
 **Statements are prepared once per connection.** The first time a connection sees a

@@ -9,7 +9,9 @@
   (:alias pool)
   (:alias connection)
   (:alias conn)
-  (:alias repo))
+  (:alias repo)
+  ; percent-decode — a DATABASE_URL's userinfo is percent-encoded by every provider
+  (:alias url))
 
 (defn adaptor ()
   "The store adaptor contract, backed by the pooled Postgres driver. Each query
@@ -53,15 +55,119 @@
 
 ;; ---- environment / convenience helpers -------------------------------------
 
+(def *default-host* "127.0.0.1")
+(def *default-port* 5432)
+(def *default-user* "postgres")
+(def *default-pool-size* 5)
+
 (defn opts-from-env (default-database)
   "Build Postgres connection opts from the standard $PG* env vars.
   `default-database` is used when $PGDATABASE is not set."
-  {:host (or (os/env "PGHOST") "127.0.0.1")
-   :port (string/->number (or (os/env "PGPORT") "5432"))
-   :user (or (os/env "PGUSER") "postgres")
-   :password (or (os/env "PGPASSWORD") "postgres")
+  {:host (or (os/env "PGHOST") *default-host*)
+   :port (port-or-default (os/env "PGPORT"))
+   :user (or (os/env "PGUSER") *default-user*)
+   :password (or (os/env "PGPASSWORD") *default-user*)
    :database (or (os/env "PGDATABASE") default-database)
-   :size 5})
+   :size *default-pool-size*})
+
+(defn opts (default-database)
+  "Connection opts from the environment, from wherever this host puts them: `$DATABASE_URL`
+  when it is set, else the `$PG*` vars.
+
+  Cloud hosts (Fly, Render, Heroku, Neon, Supabase) hand you a single URL; the `libpq`
+  convention every local tool follows is separate variables. An app that wants to run in
+  both places without a code change needs both, and every such app otherwise writes the
+  same URL parser — usually without percent-decoding the credentials, which is the bug
+  below."
+  (let (url (os/env "DATABASE_URL"))
+    (if (or (nil? url) (= (string/trim url) ""))
+      (opts-from-env default-database)
+      (opts-from-url url default-database))))
+
+(defn opts-from-url (url &optional (default-database "postgres"))
+  "Parse `postgres://user:password@host:port/database?params` into connection opts.
+
+  Every missing piece falls back to the local default, so the short forms people actually
+  type work: `postgres://localhost/my_app`, or even `postgres:///my_app`.
+
+  **The userinfo is percent-decoded**, which is the part a hand-rolled parser gets wrong.
+  Managed providers URL-encode reserved characters there, so a generated password
+  containing `/` or `@` arrives as `%2F` / `%40` — used verbatim it authenticates with the
+  wrong string and answers a password error that looks exactly like a wrong password. A
+  userinfo field that will not decode (a stray `%` in a literal password) falls back to the
+  raw text rather than to a `failure` value, because a `failure` is truthy and would travel
+  all the way into the connection attempt before failing somewhere unrelated.
+
+  **A query string is ignored, and `sslmode` with it.** This driver speaks plaintext
+  Postgres — there is no TLS in it at all — so `?sslmode=require` cannot be honoured and is
+  not silently half-honoured either: over a private network (Fly 6PN, a Docker network, a
+  unix-socket-equivalent hop) that is fine, and over the public internet it is not, so a
+  managed database reachable only over TLS needs a proxy in front of it rather than this
+  URL.
+
+    (pg/opts-from-url \"postgres://u:p@db.internal:5433/app\") ;=> {:database \"app\" :host \"db.internal\" :password \"p\" :port 5433 :size 5 :user \"u\"}"
+  (let (after-scheme (strip-scheme url)
+        no-query (first (string/split after-scheme "?"))
+        [credentials host-part] (split-last no-query "@")
+        [user password] (split-first credentials ":")
+        [host-port database] (split-first host-part "/")
+        [host port] (split-first host-port ":"))
+    {:host (blank-default host *default-host*)
+     :port (port-or-default port)
+     :user (decode-userinfo (blank-default user *default-user*))
+     :password (decode-userinfo (or password ""))
+     :database (blank-default database default-database)
+     :size *default-pool-size*}))
+
+;; ---- URL parsing helpers ----------------------------------------------------
+
+(defn port-or-default (text)
+  "`text` as a port number, or 5432 when it is absent or not a number.
+
+  The guard is `int?` rather than truthiness: `string/->number` answers a `failure` for
+  junk and a `failure` is TRUTHY, so `(or (string/->number raw) 5432)` keeps the failure
+  and hands it to the socket layer, which reports something about types instead of about
+  the port."
+  (let (parsed (string/->number (or text "")))
+    (if (int? parsed) parsed *default-port*)))
+
+(defn decode-userinfo (text)
+  "Percent-decode a URL userinfo field, falling back to the raw text when it will not
+  decode. Never answers a `failure` — see `opts-from-url`."
+  (let (decoded (url/percent-decode text))
+    (if (string? decoded) decoded text)))
+
+(defn strip-scheme (url)
+  "Drop a leading `postgres://` or `postgresql://` scheme (or any other)."
+  (let (marker "://"
+        idx (index-of url marker))
+    (if (= idx -1) url (string/substring url (+ idx (string/length marker)) (string/length url)))))
+
+(defn split-first (text separator)
+  "Split `text` on the FIRST occurrence of `separator` into `[before after]`; `after` is nil
+  when the separator is absent."
+  (let (idx (index-of text separator))
+    (if (= idx -1)
+      [text nil]
+      [(string/substring text 0 idx)
+        (string/substring text (+ idx (string/length separator)) (string/length text))])))
+
+(defn split-last (text separator)
+  "Split `text` on the LAST occurrence of `separator` into `[before after]`. When the
+  separator is absent, `before` is empty and `after` is the whole string — so a URL with no
+  credentials still yields its host in the second slot.
+
+  The LAST occurrence, because a password may legitimately contain an `@` (encoded or not)
+  and the host is what follows the final one."
+  (let (idx (string/last-index-of text separator))
+    (if (= idx -1)
+      ["" text]
+      [(string/substring text 0 idx)
+        (string/substring text (+ idx (string/length separator)) (string/length text))])))
+
+(defn blank-default (value fallback)
+  "`value` unless it is nil or empty, in which case `fallback`."
+  (if (or (nil? value) (= value "")) fallback value))
 
 (defn quote-identifier (name)
   "Double-quote a Postgres identifier, doubling any embedded double-quote. `CREATE
