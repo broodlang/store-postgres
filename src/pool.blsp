@@ -148,7 +148,7 @@
 (defn rest-v (v) (into [] (rest v)))
 
 (defn remove-pid (v pid)
-  (into [] (filter v (fn (x) (not (= x pid))))))
+  (into [] (seq/filter v (fn (x) (not (= x pid))))))
 
 (defn remove-conn (state pid)
   (assoc state

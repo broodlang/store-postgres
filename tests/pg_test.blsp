@@ -46,8 +46,7 @@
     (is (= (get (pg/opts-from-url "postgres://u:p@h" "fallback_db") :database) "fallback_db")))
 
   (test "a query string is dropped — including the sslmode this driver cannot honour"
-    (is (= (get (pg/opts-from-url "postgres://u:p@h:5432/app?sslmode=require&pool=2")
-             :database)
+    (is (= (get (pg/opts-from-url "postgres://u:p@h:5432/app?sslmode=require&pool=2") :database)
           "app")))
 
   (test "a junk port falls back rather than becoming a truthy failure in the opts"
