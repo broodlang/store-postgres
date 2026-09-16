@@ -52,6 +52,11 @@
 
 ;; ---- connect + handshake ----------------------------------------------------
 
+;; The read side of a connection, as the frame reader threads it: the buffered bytes and
+;; the offset of the first unconsumed one. Named once so `read-frame`'s arithmetic on
+;; `:off` reads an int rather than whatever a map holds.
+(deftype conn (record &open :buf bytes :off int))
+
 (defn connect (opts)
   "Open a connection and complete startup + auth. `opts`: :host :port :user
   :password :database. Returns a conn map ready for `query`."
@@ -300,6 +305,7 @@
     [type
       (bytes/slice buf (+ off 5) (+ off total))
       (assoc conn :off (+ off total))]))
+(sig read-frame (conn -> (tuple int bytes conn)))
 
 (defn fill-to (conn n)
   "Ensure at least `n` unconsumed bytes are buffered, blocking on the mailbox for more
@@ -323,6 +329,7 @@
           buf (get conn :buf)
           kept (bytes/slice buf (get conn :off) (bytes/length buf)))
       (fill-to (assoc conn :buf (bytes/concat kept more) :off 0) n))))
+(sig fill-to (conn int -> conn))
 
 ;; ---- backend message decoders -----------------------------------------------
 

@@ -25,8 +25,8 @@
     (let (s (iolist->bytes (cstring "café")))
       (is (= (bytes/length s) 6)) ; 5 UTF-8 bytes + NUL
       (is (= (read-cstring s 0) ["café" 6]))))
-  (test "xor-bytes combines two equal-length vectors"
-    (is (= (xor-bytes [1 2 3] [1 1 1]) [0 3 2]))))
+  (test "xor-bytes combines two equal-length byte strings"
+    (is (= (xor-bytes (bytes 1 2 3) (bytes 1 1 1)) (bytes 0 3 2)))))
 
 (describe "scram: RFC 7677 worked example"
   ;; user "user" / password "pencil" with the RFC's fixed nonce.
@@ -51,7 +51,9 @@
 
   (test "a tampered server signature is rejected"
     (let (st (continue (start "user" "pencil" *client-nonce*) *server-first*))
-      (is (= (first (finish st "v=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")) :error))))
+      (is (match (finish st "v=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+            ([:error _] true)
+            (_ false)))))
 
   ;; `i=` was already validated into a clean protocol error; `s=` was not, and reached
   ;; `base64-decode-bytes` as nil.

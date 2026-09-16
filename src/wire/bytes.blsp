@@ -127,5 +127,8 @@
 ;; ---- byte-vector XOR (SCRAM's client proof; no stdlib equivalent) -----------
 
 (defn xor-bytes (a b)
-  "XOR two equal-length byte vectors → byte vector."
-  (into [] (map (range (count a)) (fn (i) (bit/xor (get a i) (get b i))))))
+  "XOR two equal-length `bytes` values → `bytes`. An xor of two octets is an octet, which
+`bit/xor`'s `int` cannot say — the `bytes` constructor is what says it (and rejects it if
+ever it were not)."
+  (bytes (map (range (bytes/length a)) (fn (i) (bit/xor (bytes/at a i) (bytes/at b i))))))
+(sig xor-bytes (bytes bytes -> bytes))
