@@ -142,6 +142,7 @@
   (let (marker "://"
         idx (index-of url marker))
     (if (= idx -1) url (string/substring url (+ idx (string/length marker)) (string/length url)))))
+(sig strip-scheme (string -> string))
 
 (defn split-first (text separator)
   "Split `text` on the FIRST occurrence of `separator` into `[before after]`; `after` is nil
