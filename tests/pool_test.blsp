@@ -65,4 +65,21 @@
       ;; the pool still serves (other conn + respawn)
       (is (= (one-int (pool/query p "select 5")) 5))
       (is (= (one-int (pool/query p "select 6")) 6))
+      (pool/stop p)))
+  (test "a borrower killed inside a transaction does not hand that transaction on"
+    ;; A request handler hard-killed on timeout mid-transaction. Its connection used to go
+    ;; back into circulation with the transaction still open, so the next borrower's
+    ;; statements ran inside it and held its locks. Inside an open transaction `now()`
+    ;; stays at the transaction's start, so on that connection it no longer equals
+    ;; `statement_timestamp()`.
+    (let (p (pool/start (assoc (opts) :size 1))
+          parent (self)
+          borrower (spawn (let (pid (pool/checkout p))
+                            (connection/query pid "begin")
+                            (send parent [:in-transaction])
+                            (receive (after 60000 nil)))))
+      (receive ([:in-transaction] nil) (after 10000 nil))
+      (exit borrower :kill)
+      (receive (after 50 nil))
+      (is (= (one-int (pool/query p "select now() = statement_timestamp()")) true))
       (pool/stop p))))

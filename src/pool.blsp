@@ -87,10 +87,18 @@
         ;; a connection died — drop it (clearing any borrow record) and respawn a replacement
         (run (respawn (remove-conn (clear-borrow state pid) pid)))
         ;; a BORROWER died holding a connection (e.g. a request handler hard-killed on
-        ;; timeout, which would otherwise leak the connection out of the pool forever) —
-        ;; reclaim its connection back into circulation.
+        ;; timeout, which would otherwise leak the connection out of the pool forever).
+        ;; Its connection is in whatever state the borrower left it — inside an open
+        ;; transaction, or mid-reply — so it is NOT handed on: the next borrower's
+        ;; statements would run inside that transaction and hold its locks. Kill it (the
+        ;; server rolls back when the socket closes) and open a fresh one in its place.
+        ;; Its own :down then arrives as a non-member's with no borrow, and is ignored.
         (let (conn (conn-of-borrower (get state :borrowed) pid))
-          (if (nil? conn) (run state) (run (give-back state conn))))))
+          (if (nil? conn)
+            (run state)
+            (do
+              (exit conn :kill)
+              (run (respawn (remove-conn (clear-borrow state conn) conn))))))))
     ;; Periodic self-heal: replace connections while below target size.
     ([:replenish] (run (maybe-replenish state)))
     ([:stop from r] (map (get state :members) connection/stop)
