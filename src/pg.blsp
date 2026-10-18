@@ -16,36 +16,45 @@
 (defn adaptor ()
   "The store adaptor contract, backed by the pooled Postgres driver. Each query
   returns rows as maps keyed by column name (the shape every adaptor returns):
-    :start-pool (opts)         -> pool   ; opts: :host :port :user :password :database :size
-    :stop-pool  (pool)         -> :ok
-    :exec       (pool sql ps)  -> [{:col val…}…]   ; parameterized ($1…)
-    :query      (pool sql)     -> [{:col val…}…]   ; no params"
+    :start-pool      (opts)            -> pool   ; opts: :host :port :user :password :database :size
+    :stop-pool       (pool)            -> :ok
+    :exec            (pool sql params) -> [{:col val…}…]   ; parameterized ($1…)
+    :query           (pool sql)        -> [{:col val…}…]   ; no params
+    :with-connection (pool f)          -> (f run) on one checked-out connection
+    :columns         (pool table)      -> [{:name :type}…]
+    :lock-sql        the advisory-lock statements `repo/with-lock` and
+                     `repo/transaction-lock` run"
   {:start-pool (fn (opts) (pool/start opts))
    :stop-pool (fn (p) (pool/stop p))
    :exec (fn (p sql params) (rows->maps (pool/exec p sql params)))
    :query (fn (p sql) (rows->maps (pool/query p sql)))
-   :transaction (fn (p f) (run-transaction p f))
-   :columns (fn (p table) (pg-columns p table))})
+   :with-connection (fn (p f) (with-connection p f))
+   :columns (fn (p table) (pg-columns p table))
+   :lock-sql *lock-sql*})
+
+;; `pg_advisory_lock` returns void, which has no decoder; selecting a constant FROM the
+;; call runs it and returns a row of something that does. Release is `unlock_all`: the
+;; connection is checked out to the one caller holding it, so every session lock on it is
+;; that caller's, and it needs no key to be passed back.
+(def *lock-sql*
+  {:acquire "SELECT 1 AS locked FROM pg_advisory_lock($1)"
+   :release "SELECT 1 AS released FROM pg_advisory_unlock_all()"
+   :transaction "SELECT 1 AS locked FROM pg_advisory_xact_lock($1)"})
 
 (defn pg-columns (pool table)
   "Live columns of `table` as `[{:name <string> :type <string>}…]` (empty if the
-  table doesn't exist) — the introspection store needs for migration diffing."
+  table doesn't exist)."
   (rows->maps (pool/exec pool
                 (str "SELECT column_name AS name, data_type AS type FROM information_schema.columns"
                   " WHERE table_name = $1 ORDER BY ordinal_position")
                 [table])))
 
-(defn run-transaction (pool f)
-  "Run `f` (which takes a tx-exec `(sql params) -> rows`) inside BEGIN/COMMIT on a
-  single checked-out connection; ROLLBACK + re-raise on a throw."
+(defn with-connection (pool f)
+  "Run `(f run)` on one checked-out connection, `run` being `(sql params) -> rows` —
+  what `store`'s transactions and advisory locks need: every statement on the same
+  session. The connection goes back to the pool however `f` ends."
   (pool/with-conn pool
-    (fn (pid)
-      (let (run (fn (sql params) (rows->maps (pool/unwrap (connection/exec pid sql params)))))
-        (run "BEGIN" [])
-        (let (outcome (try {:ok (f run)} (catch e {:err e})))
-          (if (get outcome :err)
-            (do (run "ROLLBACK" []) (throw (get outcome :err)))
-            (do (run "COMMIT" []) (get outcome :ok))))))))
+    (fn (pid) (f (fn (sql params) (rows->maps (pool/unwrap (connection/exec pid sql params))))))))
 
 (defn rows->maps (result)
   "Turn the driver's positional `{:columns :rows}` into a list of `{:col value…}`

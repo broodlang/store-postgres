@@ -4,7 +4,9 @@
   (:use test)
   (:alias repo)
   (:alias query)
-  (:alias pg))
+  (:alias pg)
+  (:alias changeset)
+  (:alias migration))
 
 (defn opts ()
   {:host (or (os/env "PGHOST") "127.0.0.1")
@@ -180,23 +182,147 @@
         (is (= (sort (map (get (first ps) :tags) (fn (t) (get t :name)))) (list "elixir" "lisp")))
         (is (= (get (first (get (second ps) :tags)) :name) "sql")))
       (repo/close r)))
+  (test "nested transactions are savepoints: an inner failure rolls back only the inner work"
+    (let (r (repo/open (pg/adaptor) (opts)))
+      (repo/exec r "create temp table nest_t (id int)" [])
+      (repo/transaction r
+        (fn (tx)
+          (repo/insert tx :nest_t {:id 1})
+          (check-allow :discarded-catch
+            (try
+              (repo/transaction tx (fn (inner) (repo/insert inner :nest_t {:id 2}) (throw "inner")))
+              (catch _ nil)))
+          (repo/insert tx :nest_t {:id 3})))
+      (is (= (map (repo/all r (-> (query/from :nest_t) (query/order-by :id)))
+               (fn (row) (get row :id)))
+            (list 1 3)))
+      (repo/close r)))
 
-  (test "migration diffing: create absent, ADD new fields, DROP opt-in"
+  (test "joins, aggregates, upserts and increments run as compiled"
+    (let (r (repo/open (pg/adaptor) (opts)))
+      (repo/exec r "create temp table orgs (id int primary key, name text)" [])
+      (repo/exec r
+        "create temp table members (org_id int, user_id int, role text, primary key (org_id, user_id))"
+        [])
+      (repo/exec r "create temp table counts (k text primary key, n int)" [])
+      (repo/insert-all r :orgs [{:id 1 :name "a"} {:id 2 :name "b"}] {:returning :none})
+      (repo/insert-all r
+        :members [{:org_id 1 :user_id 9 :role "admin"} {:org_id 2 :user_id 9 :role "read"}])
+      (is (= (repo/all r
+               (-> (query/from :orgs :o)
+                 (query/select [:o.name :m.role])
+                 (query/join :members :m [:= :m.org_id [:col :o.id]])
+                 (query/where [:= :m.user_id 9])
+                 (query/order-by :o.name)))
+            (list {:name "a" :role "admin"} {:name "b" :role "read"})))
+      (is (= (repo/count-rows r (query/from :members)) 2))
+      (is (= (repo/aggregate r (query/from :orgs) :max :id) 2))
+      (is (repo/exists? r (-> (query/from :orgs) (query/where [:= :name "b"]))))
+      (refute (repo/exists? r (-> (query/from :orgs) (query/where [:= :name "z"]))))
+      ;; an upsert that adds to the existing count
+      (doseq (_ (range 3))
+        (repo/insert r
+          :counts {:k "x" :n 1}
+          {:on-conflict {:target [:k] :do {:n [:+ :counts.n [:excluded :n]]}}}))
+      (is (= (get (repo/one r (query/from :counts)) :n) 3))
+      (is (nil? (repo/insert r :counts {:k "x" :n 5} {:on-conflict {:target [:k]}})))
+      ;; an increment in an update
+      (repo/update r :counts {:n [:+ :n 10]} [:= :k "x"] {:returning :none})
+      (is (= (get (repo/one r (query/from :counts)) :n) 13))
+      (repo/close r)))
+
+  (test "a constraint violation names its constraint, and a changeset maps it to a field"
     (let (r (repo/open (pg/adaptor) (opts))
-          v1 {:table :acct :primary-key :id :fields {:id :integer :name :text}}
-          v2 {:table :acct
-              :primary-key :id
-              :fields {:id :integer :name :text :balance :numeric}})
-      (repo/exec r "create temp table acct (id int primary key, name text, gone text)" [])
-      ;; existing table → diff sees the extra live column
-      (let (d (repo/diff r v1))
-        (is (nil? (get d :create)))
-        (is (= (get d :drop) [:gone])))
-      ;; migrate to v2: ADD balance (no drop by default)
-      (repo/migrate r v2)
-      (let (cols (repo/columns r v2))
-        (is (= (sort (map cols ->string)) (list "balance" "gone" "id" "name"))))
-      ;; opt in to dropping the column gone from the schema
-      (repo/migrate r v2 {:drop true})
-      (is (= (sort (map (repo/columns r v2) ->string)) (list "balance" "id" "name")))
+          people {:table :people
+                  :primary-key :id
+                  :fields {:id :serial :email [:text {:null false}]}})
+      (repo/exec r "create temp table people (id serial primary key, email text not null)" [])
+      (repo/exec r "create unique index people_email_idx on people (email)" [])
+      (let (cs (fn (email)
+                 (-> (changeset/cast {} {"email" email} [:email] people)
+                   (changeset/validate-required [:email])
+                   (changeset/unique-constraint :email {:name "people_email_idx"}))))
+        (let ([tag row] (repo/insert-changeset r (cs "a@b")))
+          (is (= tag :ok))
+          (is (= (get row :email) "a@b"))
+          (let ([tag2 failed] (repo/insert-changeset r (cs "a@b")))
+            (is (= tag2 :error))
+            (is (= (changeset/error-for failed :email) "has already been taken"))
+            (is (= (changeset/action failed) :insert)))
+          ;; an update through the changeset, found by primary key
+          (let ([tag3 updated] (repo/update-changeset r
+                                 (changeset/cast row {"email" "c@d"} [:email] people)))
+            (is (= tag3 :ok))
+            (is (= (get updated :email) "c@d"))))
+        ;; an invalid changeset never reaches the database
+        (is (= (first (repo/insert-changeset r (cs ""))) :error)))
+      (let (e (try (repo/insert r :people {:email "c@d"}) (catch e e)))
+        (is (= (get e :violation) :unique))
+        (is (= (get e :constraint) "people_email_idx")))
+      (repo/close r))))
+
+;; Migrations against a real database. Real tables (a migration's DDL is not temporary),
+;; named for this suite and dropped before and after, with a history table of their own.
+(def- history :store_pg_test_migrations)
+
+(def- migrations
+  [{:version 20260101000000
+    :name "widgets"
+    :up [[:create-table
+           :store_pg_widgets {:primary-key :id :fields {:id :serial :name [:text {:null false}]}}]
+          [:create-index :store_pg_widgets {:columns [:name] :unique true}]]}
+    {:version 20260102000000
+     :name "widgets-colour"
+     :up [[:add-column :store_pg_widgets :colour [:text {:default "red"}]]
+           [:execute
+             "UPDATE store_pg_widgets SET colour = 'blue'"
+             "UPDATE store_pg_widgets SET colour = NULL"]]}])
+
+(defn- clean (r)
+  (repo/exec r "DROP TABLE IF EXISTS store_pg_widgets" [])
+  (repo/exec r "DROP TABLE IF EXISTS store_pg_test_migrations" []))
+
+(describe "migrations over the pg adaptor"
+  :isolated (test "migrate applies each pending migration once, rollback undoes the newest"
+    (let (r (repo/open (pg/adaptor) (assoc (opts) :size 2)))
+      (clean r)
+      (is (= (count (migration/pending r migrations {:table history})) 2))
+      (is (= (map (migration/migrate r migrations {:table history}) (fn (m) (get m :name)))
+            (list "widgets" "widgets-colour")))
+      (is (= (migration/migrate r migrations {:table history}) []))
+      (is (= (map (migration/status r migrations {:table history}) (fn (s) (get s :state)))
+            (list :up :up)))
+      (repo/insert r :store_pg_widgets {:name "w"})
+      (is (= (get (repo/one r (query/from :store_pg_widgets)) :colour) "red"))
+      (is (= (map (migration/rollback r migrations {:table history}) (fn (m) (get m :name)))
+            (list "widgets-colour")))
+      (is (= (repo/columns r :store_pg_widgets) (list :id :name)))
+      (is (= (map (migration/status r migrations {:table history}) (fn (s) (get s :state)))
+            (list :up :down)))
+      (clean r)
+      (repo/close r)))
+  (test "a failing migration leaves neither its changes nor its record"
+    (let (r (repo/open (pg/adaptor) (assoc (opts) :size 2))
+          broken (conj migrations
+                   {:version 20260103000000
+                    :name "broken"
+                    :up [[:add-column :store_pg_widgets :size :integer]
+                          [:execute "SELECT no_such_function()"]]}))
+      (clean r)
+      (is (= (first (try (migration/migrate r broken {:table history}) (catch _ [:failed])))
+            :failed))
+      (is (= (count (migration/pending r broken {:table history})) 1))
+      (refute (includes? (repo/columns r :store_pg_widgets) :size))
+      (clean r)
+      (repo/close r)))
+  (test "two migrators at once: the lock makes the second wait, then find nothing to do"
+    (let (r (repo/open (pg/adaptor) (assoc (opts) :size 3))
+          me (self))
+      (clean r)
+      (doseq (_ (range 2))
+        (spawn (fn ()
+                 (send me [:migrated (count (migration/migrate r migrations {:table history}))]))))
+      (let (counts (map (range 2) (fn (_) (receive ([:migrated n] n) (after 20000 :timeout)))))
+        (is (= (sort counts) (list 0 2))))
+      (clean r)
       (repo/close r))))

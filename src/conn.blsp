@@ -256,10 +256,28 @@
   that is simply wrong."
   (let (fields (error-fields body 0 {})
         conn (drain-to-ready conn))
-    (throw {:store-error :query
-            :message (str "store: " (error-message fields))
-            :code (get fields "C")
-            :conn conn})))
+    (throw (error-map fields conn))))
+
+;; The SQLSTATEs of the integrity-constraint class (23) store names, so a changeset can
+;; say which field a rejected write was about without knowing Postgres.
+(def *violations*
+  {"23505" :unique "23503" :foreign-key "23514" :check "23502" :not-null "23P01" :exclusion})
+
+(defn error-map (fields conn)
+  "The store error for a parsed ErrorResponse: the message and SQLSTATE, and — when the
+  server names them — the `:constraint`, `:table`, `:column` and `:detail`, plus the
+  store-level `:violation` for a constraint failure."
+  (let (base {:store-error :query
+              :message (str "store: " (error-message fields))
+              :code (get fields "C")
+              :conn conn}
+        named (fold [["n" :constraint] ["t" :table] ["c" :column] ["D" :detail]]
+                base
+                (fn (acc pair)
+                  (let ([code key] pair)
+                    (if (contains? fields code) (assoc acc key (get fields code)) acc))))
+        violation (get *violations* (get fields "C")))
+    (if violation (assoc named :violation violation) named)))
 
 (defn drain-to-ready (conn)
   (let ([type _body conn] (read-frame conn))
