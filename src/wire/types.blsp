@@ -78,4 +78,28 @@
     (float? value) (str value)
     ;; a decimal renders as plain numeric text (no `M`) — what Postgres numeric accepts
     (decimal? value) (decimal/->string value)
+    ;; A list or vector is ONE array parameter: `address = ANY($1)` with a thousand
+    ;; addresses is one statement and one bound value, where an IN list would be a
+    ;; thousand of each — and a new statement text, so a new prepared statement, for
+    ;; every length. The server types the literal from where it is used (`text[]`,
+    ;; `integer[]`).
+    (or (vector? value) (list? value)) (array-literal value)
     else (str value)))
+
+(defn array-literal (values)
+  "`values` as a Postgres array literal, `{\"a\",\"b\"}`: each element double-quoted with
+  `\\` and `\"` escaped — so a comma, a brace or a space inside one is just text — and nil as
+  NULL. One dimension: an element that is itself a collection is an error."
+  (str "{"
+    (string/join (map values
+                   (fn (element)
+                     (cond
+                       (nil? element) "NULL"
+                       (or (vector? element) (list? element))
+                         (error "pg: an array parameter is one-dimensional: " (pr-str values))
+                       else
+                         (str "\""
+                           (string/replace (string/replace (param->text element) "\\" "\\\\") "\"" "\\\"")
+                           "\""))))
+      ",")
+    "}"))

@@ -52,3 +52,13 @@
     (is (= (param->text 42) "42"))
     (is (= (param->text 2.5) "2.5"))
     (is (= (param->text "ada") "ada"))))
+
+(describe "types: a list or vector is one array parameter"
+  (test "each element quoted, so a comma or a brace inside one is just text"
+    (assert= (param->text ["a" "b,c" "{d}"]) "{\"a\",\"b,c\",\"{d}\"}")
+    (assert= (param->text (list 1 2)) "{\"1\",\"2\"}"))
+  (test "a quote and a backslash are escaped, nil is NULL, empty is {}"
+    (assert= (param->text ["say \"hi\"" "a\\b" nil]) "{\"say \\\"hi\\\"\",\"a\\\\b\",NULL}")
+    (assert= (param->text []) "{}"))
+  (test "a nested collection is refused"
+    (assert-error (param->text [[1 2]]))))
