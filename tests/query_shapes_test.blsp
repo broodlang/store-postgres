@@ -1,0 +1,277 @@
+;; Every query shape store compiles, run against a real Postgres: what proves the SQL is
+;; SQL Postgres accepts, and means what the data says. Requires PG (PG* env, default
+;; postgres/postgres @ 127.0.0.1:5432).
+(defmodule query-shapes-test
+  (:use test)
+  (:alias repo)
+  (:alias query)
+  (:alias pg))
+
+(defn- opts ()
+  {:host (or (os/env "PGHOST") "127.0.0.1")
+   :port (string/->number (or (os/env "PGPORT") "5432"))
+   :user (or (os/env "PGUSER") "postgres")
+   :password (or (os/env "PGPASSWORD") "postgres")
+   :database (or (os/env "PGDATABASE") "postgres")
+   ;; one connection, so the temp tables are on the session every statement uses
+   :size 1})
+
+(defn- column (rows key)
+  (into [] (map rows (fn (row) (get row key)))))
+
+(defn- with-tables (f)
+  (let (r (repo/open (pg/adaptor) (opts)))
+    (repo/exec r "create temp table organisations (id int primary key, name text)" [])
+    (repo/exec r
+      "create temp table members (id int primary key, organisation_id int, name text, role text, age int, team text, data jsonb)"
+      [])
+    (repo/exec r "create temp table nodes (id int primary key, parent_id int)" [])
+    (repo/exec r "create temp table archive (id int, note text)" [])
+    (repo/insert-all r
+      :organisations [{:id 1 :name "acme"} {:id 2 :name "initech"}]
+      {:returning :none})
+    (repo/insert-all r
+      :members [{:id 1
+        :organisation_id 1
+        :name "ada"
+        :role "member"
+        :age 36
+        :team nil
+        :data "{\"tags\": [\"x\"], \"user\": {\"name\": \"ada\"}}"}
+        {:id 2
+         :organisation_id 1
+         :name "grace"
+         :role "member"
+         :age 70
+         :team "core"
+         :data "{\"tags\": []}"}
+        {:id 3 :organisation_id 2 :name "alan" :role "member" :age 15 :team nil :data "{}"}]
+      {:returning :none})
+    (repo/insert-all r
+      :nodes [{:id 1 :parent_id nil} {:id 2 :parent_id 1} {:id 3 :parent_id 2} {:id 4 :parent_id nil}]
+      {:returning :none})
+    (let (outcome (try [:ok (f r)] (catch e [:failed e])))
+      (repo/close r)
+      (if (= (first outcome) :failed) (throw (second outcome)) (second outcome)))))
+
+(describe "query shapes against Postgres"
+  :isolated (test "conditions as maps, nil-aware equality, between, not-ilike"
+    (with-tables (fn (r)
+                   (is (= (column (repo/all r
+                                    (-> (query/from :members)
+                                      (query/where {:organisation_id 1 :role "member"})
+                                      (query/order-by :id)))
+                            :name)
+                         ["ada" "grace"]))
+                   (is (= (column (repo/all r
+                                    (-> (query/from :members)
+                                      (query/where [:not-distinct-from :team nil])
+                                      (query/order-by :id)))
+                            :id)
+                         [1 3]))
+                   (is (= (column (repo/all r
+                                    (-> (query/from :members) (query/where [:between :age 16 69])))
+                            :name)
+                         ["ada"]))
+                   (is (= (column (repo/all r
+                                    (-> (query/from :members)
+                                      (query/where [:not-ilike :name "A%"])
+                                      (query/order-by :id)))
+                            :name)
+                         ["grace"]))
+                   (is (= (get (repo/fetch r :members 2) :name) "grace"))
+                   (is (= (repo/fetch r :members 99) nil))
+                   (is (= (get (repo/fetch r {:table :organisations :primary-key :id :fields {}} 2)
+                            :name)
+                         "initech"))
+                   (is (= (get (repo/fetch-by r :members {:name "alan"}) :id) 3))
+                   (assert-error (repo/fetch-by r :members {:organisation_id 1}))
+                   (assert-error (repo/fetch r :members nil))
+                   (is (= (count (repo/all r :organisations)) 2)))))
+
+  (test "subqueries in FROM, joins and values; lateral joins"
+    (with-tables
+      (fn (r)
+        (is (= (column (repo/all r
+                         (-> (query/from (-> (query/from :members) (query/where [:> :age 18]))
+                               :adults)
+                           (query/select [:adults.name])
+                           (query/order-by :adults.name)))
+                 :name)
+              ["ada" "grace"]))
+        (is (= (column (repo/all r
+                         (-> (query/from :organisations :o)
+                           (query/select {:name :o.name
+                                          :members (-> (query/from :members :m)
+                                                     (query/select [[:count]])
+                                                     (query/where [:=
+                                                                    :m.organisation_id [:col :o.id]]))})
+                           (query/order-by :o.id)))
+                 :members)
+              [2 1]))
+        ;; the oldest member of each organisation, by a lateral join
+        (is (= (column (repo/all r
+                         (-> (query/from :organisations :o)
+                           (query/select {:organisation :o.name :oldest :eldest.name})
+                           (query/lateral-join (-> (query/from :members :m)
+                                                 (query/where [:= :m.organisation_id [:col :o.id]])
+                                                 (query/order-by :m.age :desc)
+                                                 (query/limit 1))
+                             :eldest)
+                           (query/order-by :o.id)))
+                 :oldest)
+              ["grace" "alan"]))
+        (is (= (count (repo/all r (-> (query/from :organisations) (query/cross-join :nodes)))) 8))
+        (is (= (count (repo/all r
+                        (-> (query/from :members :m)
+                          (query/full-join :organisations :o [:= :o.id [:col :m.organisation_id]]))))
+              3)))))
+
+  (test "CTEs, a recursive walk, and combinations"
+    (with-tables (fn (r)
+                   (is (= (column (repo/all r
+                                    (-> (query/from :adults)
+                                      (query/with-cte :adults
+                                        (-> (query/from :members) (query/where [:> :age 18])))
+                                      (query/where {:team "core"})))
+                            :name)
+                         ["grace"]))
+                   (is (= (into []
+                            (sort (column (repo/all r
+                                            (-> (query/from :tree)
+                                              (query/with-recursive-cte :tree
+                                                (-> (query/from :nodes)
+                                                  (query/where {:id 1})
+                                                  (query/union-all (-> (query/from :nodes :n)
+                                                                     (query/select [:n.*])
+                                                                     (query/join :tree
+                                                                       :t [:=
+                                                                         :n.parent_id [:col :t.id]])))))))
+                                    :id)))
+                         [1 2 3]))
+                   (is (= (column (repo/all r
+                                    (-> (query/from :members)
+                                      (query/select [:name])
+                                      (query/where {:organisation_id 1})
+                                      (query/union (-> (query/from :organisations)
+                                                     (query/select [:name])))
+                                      (query/except (-> (query/from :members)
+                                                      (query/select [:name])
+                                                      (query/where {:id 2})))
+                                      (query/order-by :name)
+                                      (query/limit 2)))
+                            :name)
+                         ["acme" "ada"])))))
+
+  (test "selects: distinct on, nulls last, case, filter, windows, casts, functions, JSON, fragments"
+    (with-tables
+      (fn (r)
+        (is (= (column (repo/all r
+                         (-> (query/from :members)
+                           (query/distinct-on [:organisation_id])
+                           (query/order-by :organisation_id)
+                           (query/order-by :age :desc)))
+                 :name)
+              ["grace" "alan"]))
+        (is (= (column (repo/all r
+                         (-> (query/from :members)
+                           (query/order-by :team :desc-nulls-last)
+                           (query/order-by :id)))
+                 :id)
+              [2 1 3]))
+        (is (= (column (repo/all r
+                         (-> (query/from :members)
+                           (query/select {:band [:case
+                                                  [:> :age 64]
+                                                  "senior"
+                                                  [:> :age 17]
+                                                  "adult"
+                                                  :else "minor"]})
+                           (query/order-by :id)))
+                 :band)
+              ["adult" "senior" "minor"]))
+        (is (= (repo/one r
+                 (-> (query/from :members)
+                   (query/select {:young [:filter [:count] [:< :age 40]] :all [:count]})))
+              {:young 2 :all 3}))
+        (is (= (column (repo/all r
+                         (-> (query/from :members)
+                           (query/select {:name :name
+                                          :rank [:over
+                                                  [:call :row_number]
+                                                  {:partition-by [:organisation_id]
+                                                   :order-by [[:age :desc]]}]})
+                           (query/order-by :id)))
+                 :rank)
+              [2 1 1]))
+        (is (= (column (repo/all r
+                         (-> (query/from :members) (query/where [:= [:cast :age :text] "70"])))
+                 :name)
+              ["grace"]))
+        (is (= (column (repo/all r
+                         (-> (query/from :members)
+                           (query/select {:n [:call :upper :name]})
+                           (query/where {:id 1})))
+                 :n)
+              ["ADA"]))
+        (is (= (column (repo/all r
+                         (-> (query/from :members)
+                           (query/where [:= [:->> :data "user" "name"] "ada"])))
+                 :id)
+              [1]))
+        (is (= (column (repo/all r
+                         (-> (query/from :members)
+                           (query/select {:tag [:->> :data "tags" 0]})
+                           (query/where {:id 1})))
+                 :tag)
+              ["x"]))
+        ;; jsonb's `?` operator is `??` in a fragment, next to a bound hole
+        (is (= (column (repo/all r
+                         (-> (query/from :members) (query/where [:fragment "? ?? ?" :data "user"])))
+                 :id)
+              [1]))
+        (is (= (column (repo/all r
+                         (-> (query/from :members)
+                           (query/where [:fragment
+                                          "lower(?) = lower(?)" :name "ADA'; DROP TABLE members; --"])))
+                 :id)
+              []))
+        (is (= (count (repo/all r :members)) 3)))))
+
+  (test "writes over a query: update-all with a join, delete-all with USING, insert from a select"
+    (with-tables
+      (fn (r)
+        (let (updated (repo/update-all r
+                        (-> (query/from :members :m)
+                          (query/join :organisations :o [:= :o.id [:col :m.organisation_id]])
+                          (query/where {:o.name "acme"}))
+                        {:role "admin"}))
+          ;; RETURNING is the updated table's columns, not the join's
+          (is (= (into [] (sort (column updated :id))) [1 2]))
+          (is (= (into [] (sort (column updated :name))) ["ada" "grace"])))
+        (is (= (column (repo/all r
+                         (-> (query/from :members)
+                           (query/where {:role "admin"})
+                           (query/order-by :id)))
+                 :id)
+              [1 2]))
+        (repo/update-all r
+          (query/where (query/from :members) [:> :age 60])
+          {:age [:+ :age 1]}
+          {:returning :none})
+        (is (= (get (repo/fetch r :members 2) :age) 71))
+        (repo/insert-all r
+          :archive (-> (query/from :members)
+            (query/select {:id :id :note [:call :upper :name]})
+            (query/where [:< :age 40]))
+          {:returning :none})
+        (is (= (column (repo/all r (query/order-by (query/from :archive) :id)) :note)
+              ["ADA" "ALAN"]))
+        (let (deleted (repo/delete-all r
+                        (-> (query/from :members)
+                          (query/join :organisations :o [:= :o.id [:col :members.organisation_id]])
+                          (query/where {:o.name "initech"}))))
+          (is (= (column deleted :id) [3])))
+        (is (= (count (repo/all r :members)) 2))
+        (repo/delete-all r :archive {:returning :none})
+        (is (empty? (repo/all r :archive)))))))
