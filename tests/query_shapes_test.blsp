@@ -275,3 +275,118 @@
         (is (= (count (repo/all r :members)) 2))
         (repo/delete-all r :archive {:returning :none})
         (is (empty? (repo/all r :archive)))))))
+
+;; What review of 0.6.0 found, each as Postgres sees it.
+(describe "query shapes against Postgres: review fixes"
+  :isolated (test "a fragment's OR stays inside it beside an AND"
+    (with-tables
+      (fn (r)
+        ;; without the parentheses, `id = 1 OR id = 2 AND team = 'core'` would also return ada
+        (is (= (column (repo/all r
+                         (-> (query/from :members)
+                           (query/where [:fragment "id = ? OR id = ?" 1 2])
+                           (query/where {:team "core"})))
+                 :name)
+              ["grace"])))))
+  (test "a count, a sum and an existence over a union, a limit or a distinct on are over its rows"
+    (with-tables (fn (r)
+                   (let (names (-> (query/from :members)
+                                 (query/select [:name])
+                                 (query/union (-> (query/from :organisations)
+                                                (query/select [:name])))))
+                     (is (= (repo/count-rows r names) 5))
+                     (is (= (get (repo/fetch-by r names {:name "acme"}) :name) "acme")))
+                   (is (= (repo/count-rows r
+                            (-> (query/from :members) (query/order-by :id) (query/limit 2)))
+                         2))
+                   (is (= (repo/count-rows r
+                            (-> (query/from :members)
+                              (query/distinct-on [:organisation_id])
+                              (query/order-by :organisation_id)))
+                         2))
+                   (is (= (repo/aggregate r
+                            (-> (query/from :members) (query/order-by :age) (query/limit 2))
+                            :sum :age)
+                         51))
+                   (is (repo/exists? r
+                         (-> (query/from :members)
+                           (query/group-by [:organisation_id])
+                           (query/select [:organisation_id]))))
+                   (is (= (repo/count-rows r
+                            (query/where (query/from :members) {:organisation_id 1}))
+                         2)))))
+  (test "an update over two joins, each naming the table it writes"
+    (with-tables (fn (r)
+                   (repo/exec r "create temp table plans (member_id int, tier text)" [])
+                   (repo/insert-all r
+                     :plans [{:member_id 1 :tier "pro"} {:member_id 3 :tier "pro"}]
+                     {:returning :none})
+                   (let (updated (repo/update-all r
+                                   (-> (query/from :members :m)
+                                     (query/join :organisations
+                                       :o [:= :o.id [:col :m.organisation_id]])
+                                     (query/join :plans :p [:= :p.member_id [:col :m.id]])
+                                     (query/where {:o.name "acme" :p.tier "pro"}))
+                                   {:role "owner"}))
+                     (is (= (column updated :id) [1]))))))
+  (test "functions Postgres spells as keywords, a precise cast, a conflict update with a WHERE"
+    (with-tables
+      (fn (r)
+        (is (= (repo/one r
+                 (-> (query/from :members)
+                   (query/select {:most [:greatest :age 50]
+                                  :none [:nullif :name "ada"]
+                                  :least [:least :age 20]})
+                   (query/where {:id 1})))
+              {:most 50 :none nil :least 20}))
+        (is (= (count (repo/all r
+                        (-> (query/from :members)
+                          (query/select {:at [:cast
+                                               [:literal "2026-10-18 10:00:00+00"]
+                                               "timestamp(0) with time zone"]}))))
+              3))
+        ;; replace the name only when the row is still a member
+        (repo/insert-all r
+          :members [{:id 1 :name "ADA"} {:id 2 :name "GRACE"}]
+          {:on-conflict {:target [:id] :do [:name] :where [:= :members.age 36]} :returning :none})
+        (is (= (column (repo/all r
+                         (-> (query/from :members)
+                           (query/where [:in :id [1 2]])
+                           (query/order-by :id)))
+                 :name)
+              ["ADA" "grace"]))))))
+
+(describe "query shapes against Postgres: locks through fetch-by"
+  :isolated (test "fetch-by keeps the lock it is given"
+    (with-tables
+      (fn (r)
+        (repo/transaction r
+          (fn (tx)
+            ;; xmax names the locking transaction once FOR UPDATE has taken the row
+            (repo/fetch-by tx (query/lock (query/from :members) :update) {:id 1})
+            (is (not (= (get (repo/one tx
+                               (-> (query/from :members)
+                                 (query/select {:locker [:cast :xmax :text]})
+                                 (query/where {:id 1})))
+                          :locker)
+                       "0")))
+            (is (= (get (repo/one tx
+                          (-> (query/from :members)
+                            (query/select {:locker [:cast :xmax :text]})
+                            (query/where {:id 2})))
+                     :locker)
+                  "0"))))))))
+
+(describe "query shapes against Postgres: grouped queries"
+  :isolated (test "exists? and count-rows over a grouped query that selects nothing count its groups"
+    (with-tables (fn (r)
+                   (is (repo/exists? r
+                         (-> (query/from :members) (query/group-by [:organisation_id]))))
+                   (is (= (repo/count-rows r
+                            (-> (query/from :members) (query/group-by [:organisation_id])))
+                         2))
+                   (is (= (repo/count-rows r
+                            (-> (query/from :members)
+                              (query/group-by [:organisation_id])
+                              (query/having [:> [:count] 1])))
+                         1))))))
