@@ -325,4 +325,34 @@
       (let (counts (map (range 2) (fn (_) (receive ([:migrated n] n) (after 20000 :timeout)))))
         (is (= (sort counts) (list 0 2))))
       (clean r)
+      (repo/close r)))
+  ;; The check is the one a predicate inside a comparison gets wrong without its parentheses:
+  ;; exactly one of the two columns is set.
+  (test "table constraints: a unique and a check hold, are named, and roll back"
+    (let (r (repo/open (pg/adaptor) (assoc (opts) :size 2))
+          constrained [{:version 20260101000000
+                        :name "widgets"
+                        :up [[:create-table
+                               :store_pg_widgets {:primary-key :id
+                                                  :fields {:id :serial :name :text :owner :integer}
+                                                  :constraints [{:unique [:name]}
+                                                                 {:check [:<> [:is-nil :name] [:is-nil :owner]]}]}]]}
+                       {:version 20260102000000
+                        :name "widgets-owner-unique"
+                        :up [[:add-constraint :store_pg_widgets {:unique [:owner]}]]}]
+          violation (fn (row)
+                      (let (e (try (do (repo/insert r :store_pg_widgets row) nil) (catch e e)))
+                        (when e [(get e :violation) (get e :constraint)]))))
+      (clean r)
+      (is (= (count (migration/migrate r constrained {:table history})) 2))
+      (is (= (violation {:name "a"}) nil))
+      (is (= (violation {:owner 1}) nil))
+      (is (= (violation {:name "a"}) [:unique "store_pg_widgets_name_key"]))
+      (is (= (violation {:owner 1}) [:unique "store_pg_widgets_owner_key"]))
+      (is (= (violation {:name "b" :owner 2}) [:check "store_pg_widgets_check"]))
+      (is (= (violation {}) [:check "store_pg_widgets_check"]))
+      (is (= (map (migration/rollback r constrained {:table history}) (fn (m) (get m :name)))
+            (list "widgets-owner-unique")))
+      (is (= (violation {:owner 1}) nil))
+      (clean r)
       (repo/close r))))

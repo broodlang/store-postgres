@@ -36,6 +36,15 @@
       (is (= (get bad 0) :error))
       ;; same connection still works afterward
       (is (= (one-int (get (connection/query pid "select 7") 1)) 7))
+      (connection/stop pid)))
+  ;; Parse succeeds and Execute fails, so the server keeps the statement: the next new
+  ;; statement on the connection must not be given the same name.
+  (test "a new statement that fails executing does not lose its name to the next one"
+    (let (pid (connection/start (opts)))
+      (is (= (get (connection/exec pid "select 1 / $1::int as quotient" [0]) 0) :error))
+      (is (= (connection/exec pid "select $1::int + 1 as next" [1]) [:ok {:columns ["next"] :rows [[2]]}]))
+      ;; and the failed text runs again, parsed afresh
+      (is (= (connection/exec pid "select 1 / $1::int as quotient" [1]) [:ok {:columns ["quotient"] :rows [[1]]}]))
       (connection/stop pid))))
 
 (describe "pool"

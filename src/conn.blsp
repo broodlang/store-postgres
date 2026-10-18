@@ -207,7 +207,13 @@
   `Describe(S)` and not `Describe(P)`: describing the STATEMENT is what yields descriptors
   valid for every later execution, where describing the portal would only describe this one.
   Past `*max-statements*` nothing is named or remembered and this is the original one-shot
-  unnamed-statement exchange."
+  unnamed-statement exchange.
+
+  A statement that fails still uses up its name: when the Parse succeeded and the Execute
+  failed (a constraint violation), the server keeps the statement, so handing the name to
+  the next new statement would fail it with `prepared statement already exists`. It is not
+  cached either — whether the server holds it depends on which message failed — so the next
+  run of the same text parses again, under a new name."
   (let (cache (get conn :stmts)
         room? (< (count cache) *max-statements*)
         n (get conn :next-stmt 0)
@@ -218,7 +224,12 @@
         (bind-message "" name params)
         (execute-message "" 0)
         (sync-message)])
-    (let ([result conn cols] (collect conn {:columns [] :rows (list)} []))
+    (let ([result conn cols] (try
+                               (collect conn {:columns [] :rows (list)} [])
+                               (catch e
+                                 (throw (if (and room? (get e :conn))
+                                          (assoc e :conn (assoc (get e :conn) :next-stmt (+ n 1)))
+                                          e)))))
       [result
         (if room?
           (assoc conn :stmts (assoc cache sql {:name name :cols cols}) :next-stmt (+ n 1))
