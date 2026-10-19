@@ -42,9 +42,11 @@
   (test "a new statement that fails executing does not lose its name to the next one"
     (let (pid (connection/start (opts)))
       (is (= (get (connection/exec pid "select 1 / $1::int as quotient" [0]) 0) :error))
-      (is (= (connection/exec pid "select $1::int + 1 as next" [1]) [:ok {:columns ["next"] :rows [[2]]}]))
+      (is (= (connection/exec pid "select $1::int + 1 as next" [1])
+            [:ok {:columns ["next"] :rows [[2]]}]))
       ;; and the failed text runs again, parsed afresh
-      (is (= (connection/exec pid "select 1 / $1::int as quotient" [1]) [:ok {:columns ["quotient"] :rows [[1]]}]))
+      (is (= (connection/exec pid "select 1 / $1::int as quotient" [1])
+            [:ok {:columns ["quotient"] :rows [[1]]}]))
       (connection/stop pid))))
 
 (describe "pool"

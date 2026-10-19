@@ -99,7 +99,8 @@
                          (error "pg: an array parameter is one-dimensional: " (pr-str values))
                        else
                          (str "\""
-                           (string/replace (string/replace (param->text element) "\\" "\\\\") "\"" "\\\"")
+                           (string/replace (string/replace (param->text element) "\\" "\\\\")
+                             "\"" "\\\"")
                            "\""))))
       ",")
     "}"))

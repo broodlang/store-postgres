@@ -44,14 +44,23 @@
                       (query/order-by :id))))
         (is (= (map names (fn (m) (get m :name))) (list "ada" "alan"))))
       ;; any: the list is ONE array parameter, typed by the column it meets
-      (let (names (fn (where) (map (repo/all r (-> (query/from :t) (query/select [:name]) (query/where where) (query/order-by :id)))
-                                (fn (m) (get m :name)))))
+      (let (names (fn (where)
+                    (map (repo/all r
+                           (-> (query/from :t)
+                             (query/select [:name])
+                             (query/where where)
+                             (query/order-by :id)))
+                      (fn (m) (get m :name)))))
         (is (= (names [:any :id [1 3]]) (list "ada" "alan")))
         (is (= (names [:any :name ["grace" "nobody"]]) (list "grace")))
         (is (= (names [:any :id []]) (list))))
       (repo/exec r "create temp table odd (name text)" [])
-      (repo/insert-all r :odd [{:name "a,b"} {:name "say \"hi\""} {:name "back\\slash"} {:name "{brace}"}] {:returning :none})
-      (is (= (count (repo/all r (-> (query/from :odd) (query/where [:any :name ["a,b" "say \"hi\"" "back\\slash" "{brace}"]]))))
+      (repo/insert-all r
+        :odd [{:name "a,b"} {:name "say \"hi\""} {:name "back\\slash"} {:name "{brace}"}]
+        {:returning :none})
+      (is (= (count (repo/all r
+                      (-> (query/from :odd)
+                        (query/where [:any :name ["a,b" "say \"hi\"" "back\\slash" "{brace}"]]))))
             4))
       (is (empty? (repo/all r (-> (query/from :odd) (query/where [:any :name ["a"]])))))
       (repo/close r)))
@@ -345,12 +354,12 @@
                         :name "widgets"
                         :up [[:create-table
                                :store_pg_widgets {:primary-key :id
-                                                  :fields {:id :serial :name :text :owner :integer}
-                                                  :constraints [{:unique [:name]}
-                                                                 {:check [:<> [:is-nil :name] [:is-nil :owner]]}]}]]}
-                       {:version 20260102000000
-                        :name "widgets-owner-unique"
-                        :up [[:add-constraint :store_pg_widgets {:unique [:owner]}]]}]
+                                :fields {:id :serial :name :text :owner :integer}
+                                :constraints [{:unique [:name]}
+                                               {:check [:<> [:is-nil :name] [:is-nil :owner]]}]}]]}
+                        {:version 20260102000000
+                         :name "widgets-owner-unique"
+                         :up [[:add-constraint :store_pg_widgets {:unique [:owner]}]]}]
           violation (fn (row)
                       (let (e (try (do (repo/insert r :store_pg_widgets row) nil) (catch e e)))
                         (when e [(get e :violation) (get e :constraint)]))))
