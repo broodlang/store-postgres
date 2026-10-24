@@ -22,6 +22,7 @@
     :query           (pool sql)        -> [{:col val…}…]   ; no params
     :with-connection (pool f)          -> (f run) on one checked-out connection
     :columns         (pool table)      -> [{:name :type}…]
+    :create-database (opts)            -> nil  ; creates `:database` when absent (`migration/command setup`)
     :lock-sql        the advisory-lock statements `repo/with-lock` and
                      `repo/transaction-lock` run"
   {:start-pool (fn (opts) (pool/start opts))
@@ -30,6 +31,7 @@
    :query (fn (p sql) (rows->maps (pool/query p sql)))
    :with-connection (fn (p f) (with-connection p f))
    :columns (fn (p table) (pg-columns p table))
+   :create-database (fn (opts) (create-database opts))
    :lock-sql *lock-sql*})
 
 ;; `pg_advisory_lock` returns void, which has no decoder; selecting a constant FROM the
@@ -92,6 +94,17 @@
     (if (or (nil? url) (= (string/trim url) ""))
       (opts-from-env default-database)
       (opts-from-url url default-database))))
+
+(defn test-opts (database)
+  "Connection opts for an app's TEST database: `opts` pointed at `<database>_test` (or
+  `$PGTEST_DATABASE`), so a test run can never write over the database `nest run` serves —
+  the `_dev` / `_test` split every app makes, for the same reason. The credentials come
+  from wherever `opts` finds them, so this needs nothing configured locally and stays
+  overridable in CI. Two connections: a database suite runs serially."
+  (let (named (os/env "PGTEST_DATABASE"))
+    (assoc (opts database)
+      :database (if (or (nil? named) (= (string/trim named) "")) (str database "_test") named)
+      :size 2)))
 
 (defn opts-from-url (url &optional (default-database "postgres"))
   "Parse `postgres://user:password@host:port/database?params` into connection opts.
