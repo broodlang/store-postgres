@@ -12,14 +12,11 @@ adaptor-agnostic, and this package makes it speak to Postgres.
 Depend on both `store` and `store-postgres`, then point `store`'s repo at the
 `pg` adaptor with a connection pool:
 
-```brood
-(:alias store)
-(:alias pg)
-
-(let (pool (pg/start-pool {:host "localhost" :port 5432
-                           :database "myapp" :user "postgres" :password "…"
-                           :size 10}))
-  (store/query (store/repo pg pool) "SELECT * FROM users WHERE id = $1" [42]))
+```brood fragment
+(let (repo (repo/open (pg/adaptor) {:host "localhost" :port 5432
+                                    :database "myapp" :user "postgres" :password "…"
+                                    :size 10}))
+  (repo/exec repo "SELECT * FROM users WHERE id = $1" [42]))   ; => [{:id 42 …}]
 ```
 
 See `store`'s README for the query/insert/migration API; this package only
