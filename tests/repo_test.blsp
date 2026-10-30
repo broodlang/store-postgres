@@ -25,7 +25,7 @@
         "insert into t values ($1,$2,$3),($4,$5,$6),($7,$8,$9)"
         [1 "ada" "9.99" 2 "grace" "100.50" 3 "alan" "0.01"])
       (let (rows (repo/all r
-                   (-> (query/from :t)
+                   (-> (query/table :t)
                      (query/where [:> :id 1])
                      (query/order-by :id))))
         (is (= (count rows) 2))
@@ -33,12 +33,12 @@
         (is (= (get (first rows) :id) 2))
         ;; numeric decodes to an exact decimal through the whole stack
         (is (= (get (first rows) :amount) 100.50M)))
-      (let (one (repo/one r (-> (query/from :t) (query/where [:= :name "alan"]))))
+      (let (one (repo/one r (-> (query/table :t) (query/where [:= :name "alan"]))))
         (is (= (get one :id) 3))
         (is (= (get one :amount) 0.01M)))
       ;; in / projection
       (let (names (repo/all r
-                    (-> (query/from :t)
+                    (-> (query/table :t)
                       (query/select [:name])
                       (query/where [:in :id [1 3]])
                       (query/order-by :id))))
@@ -46,7 +46,7 @@
       ;; any: the list is ONE array parameter, typed by the column it meets
       (let (names (fn (where)
                     (map (repo/all r
-                           (-> (query/from :t)
+                           (-> (query/table :t)
                              (query/select [:name])
                              (query/where where)
                              (query/order-by :id)))
@@ -59,10 +59,10 @@
         :odd [{:name "a,b"} {:name "say \"hi\""} {:name "back\\slash"} {:name "{brace}"}]
         {:returning :none})
       (is (= (count (repo/all r
-                      (-> (query/from :odd)
+                      (-> (query/table :odd)
                         (query/where [:any :name ["a,b" "say \"hi\"" "back\\slash" "{brace}"]]))))
             4))
-      (is (empty? (repo/all r (-> (query/from :odd) (query/where [:any :name ["a"]])))))
+      (is (empty? (repo/all r (-> (query/table :odd) (query/where [:any :name ["a"]])))))
       (repo/close r)))
 
   (test "insert / update / delete via the repo (data-driven, RETURNING)"
@@ -74,7 +74,7 @@
         (is (= (count upd) 1))
         (is (= (get (first upd) :name) "GRACE")))
       (is (= (count (repo/delete r :w [:= :id 1])) 1))
-      (let (left (repo/all r (-> (query/from :w) (query/order-by :id))))
+      (let (left (repo/all r (-> (query/table :w) (query/order-by :id))))
         (is (= (count left) 1))
         (is (= (get (first left) :name) "GRACE")))
       (repo/close r)))
@@ -88,7 +88,7 @@
         (fn (tx)
           (repo/update tx :acct {:bal 90} [:= :id 1])
           (repo/insert tx :acct {:id 2 :bal 10})))
-      (is (= (count (repo/all r (query/from :acct))) 2))
+      (is (= (count (repo/all r (query/table :acct))) 2))
       ;; throw → rolled back, and the error propagates
       (is (= (first (try
                       (repo/transaction r
@@ -97,7 +97,7 @@
                           (throw "boom")))
                       (catch _ [:caught])))
             :caught))
-      (is (= (get (repo/one r (-> (query/from :acct) (query/where [:= :id 1]))) :bal) 90))
+      (is (= (get (repo/one r (-> (query/table :acct) (query/where [:= :id 1]))) :bal) 90))
       (repo/close r)))
 
   (test "associations: has-many / belongs-to preload (one query each)"
@@ -122,13 +122,13 @@
       (repo/insert r :posts {:id 12 :author_id 2 :title "g1"})
       (let (us (repo/preload r
                  users
-                 (repo/all r (-> (query/from :users) (query/order-by :id)))
+                 (repo/all r (-> (query/table :users) (query/order-by :id)))
                  :posts))
         (is (= (count (get (first us) :posts)) 2))
         (is (= (count (get (second us) :posts)) 1)))
       (let (ps (repo/preload r
                  posts
-                 (repo/all r (-> (query/from :posts) (query/order-by :id)))
+                 (repo/all r (-> (query/table :posts) (query/order-by :id)))
                  :author))
         (is (= (get (get (first ps) :author) :name) "ada"))
         (is (= (get (get (nth ps 2) :author) :name) "grace")))
@@ -164,7 +164,7 @@
       (repo/insert r :comments {:id 102 :post_id 11 :body "c3"})
       (let (us (repo/preload r
                  users
-                 (repo/all r (-> (query/from :users) (query/order-by :id)))
+                 (repo/all r (-> (query/table :users) (query/order-by :id)))
                  {:posts :comments}))
         (let (ps (get (first us) :posts))
           (is (= (count ps) 2))
@@ -195,7 +195,7 @@
       (repo/exec r "insert into post_tags values (10,1),(10,2),(11,3)" [])
       (let (ps (repo/preload r
                  post
-                 (repo/all r (-> (query/from :posts) (query/order-by :id)))
+                 (repo/all r (-> (query/table :posts) (query/order-by :id)))
                  :tags))
         (is (= (count (get (first ps) :tags)) 2))
         (is (= (count (get (second ps) :tags)) 1))
@@ -213,7 +213,7 @@
               (repo/transaction tx (fn (inner) (repo/insert inner :nest_t {:id 2}) (throw "inner")))
               (catch _ nil)))
           (repo/insert tx :nest_t {:id 3})))
-      (is (= (map (repo/all r (-> (query/from :nest_t) (query/order-by :id)))
+      (is (= (map (repo/all r (-> (query/table :nest_t) (query/order-by :id)))
                (fn (row) (get row :id)))
             (list 1 3)))
       (repo/close r)))
@@ -229,26 +229,26 @@
       (repo/insert-all r
         :members [{:org_id 1 :user_id 9 :role "admin"} {:org_id 2 :user_id 9 :role "read"}])
       (is (= (repo/all r
-               (-> (query/from :orgs :o)
+               (-> (query/table :orgs :o)
                  (query/select [:o.name :m.role])
                  (query/join :members :m [:= :m.org_id [:col :o.id]])
                  (query/where [:= :m.user_id 9])
                  (query/order-by :o.name)))
             (list {:name "a" :role "admin"} {:name "b" :role "read"})))
-      (is (= (repo/count-rows r (query/from :members)) 2))
-      (is (= (repo/aggregate r (query/from :orgs) :max :id) 2))
-      (is (repo/exists? r (-> (query/from :orgs) (query/where [:= :name "b"]))))
-      (refute (repo/exists? r (-> (query/from :orgs) (query/where [:= :name "z"]))))
+      (is (= (repo/count-rows r (query/table :members)) 2))
+      (is (= (repo/aggregate r (query/table :orgs) :max :id) 2))
+      (is (repo/exists? r (-> (query/table :orgs) (query/where [:= :name "b"]))))
+      (refute (repo/exists? r (-> (query/table :orgs) (query/where [:= :name "z"]))))
       ;; an upsert that adds to the existing count
       (doseq (_ (range 3))
         (repo/insert r
           :counts {:k "x" :n 1}
           {:on-conflict {:target [:k] :do {:n [:+ :counts.n [:excluded :n]]}}}))
-      (is (= (get (repo/one r (query/from :counts)) :n) 3))
+      (is (= (get (repo/one r (query/table :counts)) :n) 3))
       (is (nil? (repo/insert r :counts {:k "x" :n 5} {:on-conflict {:target [:k]}})))
       ;; an increment in an update
       (repo/update r :counts {:n [:+ :n 10]} [:= :k "x"] {:returning :none})
-      (is (= (get (repo/one r (query/from :counts)) :n) 13))
+      (is (= (get (repo/one r (query/table :counts)) :n) 13))
       (repo/close r)))
 
   (test "a constraint violation names its constraint, and a changeset maps it to a field"
@@ -313,7 +313,7 @@
       (is (= (map (migration/status r migrations {:table history}) (fn (s) (get s :state)))
             (list :up :up)))
       (repo/insert r :store_pg_widgets {:name "w"})
-      (is (= (get (repo/one r (query/from :store_pg_widgets)) :colour) "red"))
+      (is (= (get (repo/one r (query/table :store_pg_widgets)) :colour) "red"))
       (is (= (map (migration/rollback r migrations {:table history}) (fn (m) (get m :name)))
             (list "widgets-colour")))
       (is (= (repo/columns r :store_pg_widgets) (list :id :name)))
@@ -387,7 +387,7 @@
       (repo/insert-all r :store_pg_jobs [{:id 1} {:id 2}] {:returning :none})
       (let (claim (fn (tx)
                     (map (repo/all tx
-                           (-> (query/from :store_pg_jobs)
+                           (-> (query/table :store_pg_jobs)
                              (query/order-by :id)
                              (query/limit 1)
                              (query/lock :update :skip-locked)))

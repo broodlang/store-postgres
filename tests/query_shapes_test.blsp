@@ -58,23 +58,23 @@
   :isolated (test "conditions as maps, nil-aware equality, between, not-ilike"
     (with-tables (fn (r)
                    (is (= (column (repo/all r
-                                    (-> (query/from :members)
+                                    (-> (query/table :members)
                                       (query/where {:organisation_id 1 :role "member"})
                                       (query/order-by :id)))
                             :name)
                          ["ada" "grace"]))
                    (is (= (column (repo/all r
-                                    (-> (query/from :members)
+                                    (-> (query/table :members)
                                       (query/where [:not-distinct-from :team nil])
                                       (query/order-by :id)))
                             :id)
                          [1 3]))
                    (is (= (column (repo/all r
-                                    (-> (query/from :members) (query/where [:between :age 16 69])))
+                                    (-> (query/table :members) (query/where [:between :age 16 69])))
                             :name)
                          ["ada"]))
                    (is (= (column (repo/all r
-                                    (-> (query/from :members)
+                                    (-> (query/table :members)
                                       (query/where [:not-ilike :name "A%"])
                                       (query/order-by :id)))
                             :name)
@@ -93,16 +93,16 @@
     (with-tables
       (fn (r)
         (is (= (column (repo/all r
-                         (-> (query/from (-> (query/from :members) (query/where [:> :age 18]))
+                         (-> (query/table (-> (query/table :members) (query/where [:> :age 18]))
                                :adults)
                            (query/select [:adults.name])
                            (query/order-by :adults.name)))
                  :name)
               ["ada" "grace"]))
         (is (= (column (repo/all r
-                         (-> (query/from :organisations :o)
+                         (-> (query/table :organisations :o)
                            (query/select {:name :o.name
-                                          :members (-> (query/from :members :m)
+                                          :members (-> (query/table :members :m)
                                                      (query/select [[:count]])
                                                      (query/where [:=
                                                                     :m.organisation_id [:col :o.id]]))})
@@ -111,9 +111,9 @@
               [2 1]))
         ;; the oldest member of each organisation, by a lateral join
         (is (= (column (repo/all r
-                         (-> (query/from :organisations :o)
+                         (-> (query/table :organisations :o)
                            (query/select {:organisation :o.name :oldest :eldest.name})
-                           (query/lateral-join (-> (query/from :members :m)
+                           (query/lateral-join (-> (query/table :members :m)
                                                  (query/where [:= :m.organisation_id [:col :o.id]])
                                                  (query/order-by :m.age :desc)
                                                  (query/limit 1))
@@ -121,28 +121,28 @@
                            (query/order-by :o.id)))
                  :oldest)
               ["grace" "alan"]))
-        (is (= (count (repo/all r (-> (query/from :organisations) (query/cross-join :nodes)))) 8))
+        (is (= (count (repo/all r (-> (query/table :organisations) (query/cross-join :nodes)))) 8))
         (is (= (count (repo/all r
-                        (-> (query/from :members :m)
+                        (-> (query/table :members :m)
                           (query/full-join :organisations :o [:= :o.id [:col :m.organisation_id]]))))
               3)))))
 
   (test "CTEs, a recursive walk, and combinations"
     (with-tables (fn (r)
                    (is (= (column (repo/all r
-                                    (-> (query/from :adults)
+                                    (-> (query/table :adults)
                                       (query/with-cte :adults
-                                        (-> (query/from :members) (query/where [:> :age 18])))
+                                        (-> (query/table :members) (query/where [:> :age 18])))
                                       (query/where {:team "core"})))
                             :name)
                          ["grace"]))
                    (is (= (into []
                             (sort (column (repo/all r
-                                            (-> (query/from :tree)
+                                            (-> (query/table :tree)
                                               (query/with-recursive-cte :tree
-                                                (-> (query/from :nodes)
+                                                (-> (query/table :nodes)
                                                   (query/where {:id 1})
-                                                  (query/union-all (-> (query/from :nodes :n)
+                                                  (query/union-all (-> (query/table :nodes :n)
                                                                      (query/select [:n.*])
                                                                      (query/join :tree
                                                                        :t [:=
@@ -150,12 +150,12 @@
                                     :id)))
                          [1 2 3]))
                    (is (= (column (repo/all r
-                                    (-> (query/from :members)
+                                    (-> (query/table :members)
                                       (query/select [:name])
                                       (query/where {:organisation_id 1})
-                                      (query/union (-> (query/from :organisations)
+                                      (query/union (-> (query/table :organisations)
                                                      (query/select [:name])))
-                                      (query/except (-> (query/from :members)
+                                      (query/except (-> (query/table :members)
                                                       (query/select [:name])
                                                       (query/where {:id 2})))
                                       (query/order-by :name)
@@ -167,20 +167,20 @@
     (with-tables
       (fn (r)
         (is (= (column (repo/all r
-                         (-> (query/from :members)
+                         (-> (query/table :members)
                            (query/distinct-on [:organisation_id])
                            (query/order-by :organisation_id)
                            (query/order-by :age :desc)))
                  :name)
               ["grace" "alan"]))
         (is (= (column (repo/all r
-                         (-> (query/from :members)
+                         (-> (query/table :members)
                            (query/order-by :team :desc-nulls-last)
                            (query/order-by :id)))
                  :id)
               [2 1 3]))
         (is (= (column (repo/all r
-                         (-> (query/from :members)
+                         (-> (query/table :members)
                            (query/select {:band [:case
                                                   [:> :age 64]
                                                   "senior"
@@ -191,11 +191,11 @@
                  :band)
               ["adult" "senior" "minor"]))
         (is (= (repo/one r
-                 (-> (query/from :members)
+                 (-> (query/table :members)
                    (query/select {:young [:filter [:count] [:< :age 40]] :all [:count]})))
               {:young 2 :all 3}))
         (is (= (column (repo/all r
-                         (-> (query/from :members)
+                         (-> (query/table :members)
                            (query/select {:name :name
                                           :rank [:over
                                                   [:call :row_number]
@@ -205,33 +205,33 @@
                  :rank)
               [2 1 1]))
         (is (= (column (repo/all r
-                         (-> (query/from :members) (query/where [:= [:cast :age :text] "70"])))
+                         (-> (query/table :members) (query/where [:= [:cast :age :text] "70"])))
                  :name)
               ["grace"]))
         (is (= (column (repo/all r
-                         (-> (query/from :members)
+                         (-> (query/table :members)
                            (query/select {:n [:call :upper :name]})
                            (query/where {:id 1})))
                  :n)
               ["ADA"]))
         (is (= (column (repo/all r
-                         (-> (query/from :members)
+                         (-> (query/table :members)
                            (query/where [:= [:->> :data "user" "name"] "ada"])))
                  :id)
               [1]))
         (is (= (column (repo/all r
-                         (-> (query/from :members)
+                         (-> (query/table :members)
                            (query/select {:tag [:->> :data "tags" 0]})
                            (query/where {:id 1})))
                  :tag)
               ["x"]))
         ;; jsonb's `?` operator is `??` in a fragment, next to a bound hole
         (is (= (column (repo/all r
-                         (-> (query/from :members) (query/where [:fragment "? ?? ?" :data "user"])))
+                         (-> (query/table :members) (query/where [:fragment "? ?? ?" :data "user"])))
                  :id)
               [1]))
         (is (= (column (repo/all r
-                         (-> (query/from :members)
+                         (-> (query/table :members)
                            (query/where [:fragment
                                           "lower(?) = lower(?)" :name "ADA'; DROP TABLE members; --"])))
                  :id)
@@ -242,7 +242,7 @@
     (with-tables
       (fn (r)
         (let (updated (repo/update-all r
-                        (-> (query/from :members :m)
+                        (-> (query/table :members :m)
                           (query/join :organisations :o [:= :o.id [:col :m.organisation_id]])
                           (query/where {:o.name "acme"}))
                         {:role "admin"}))
@@ -250,25 +250,25 @@
           (is (= (into [] (sort (column updated :id))) [1 2]))
           (is (= (into [] (sort (column updated :name))) ["ada" "grace"])))
         (is (= (column (repo/all r
-                         (-> (query/from :members)
+                         (-> (query/table :members)
                            (query/where {:role "admin"})
                            (query/order-by :id)))
                  :id)
               [1 2]))
         (repo/update-all r
-          (query/where (query/from :members) [:> :age 60])
+          (query/where (query/table :members) [:> :age 60])
           {:age [:+ :age 1]}
           {:returning :none})
         (is (= (get (repo/fetch r :members 2) :age) 71))
         (repo/insert-all r
-          :archive (-> (query/from :members)
+          :archive (-> (query/table :members)
             (query/select {:id :id :note [:call :upper :name]})
             (query/where [:< :age 40]))
           {:returning :none})
-        (is (= (column (repo/all r (query/order-by (query/from :archive) :id)) :note)
+        (is (= (column (repo/all r (query/order-by (query/table :archive) :id)) :note)
               ["ADA" "ALAN"]))
         (let (deleted (repo/delete-all r
-                        (-> (query/from :members)
+                        (-> (query/table :members)
                           (query/join :organisations :o [:= :o.id [:col :members.organisation_id]])
                           (query/where {:o.name "initech"}))))
           (is (= (column deleted :id) [3])))
@@ -283,37 +283,37 @@
       (fn (r)
         ;; without the parentheses, `id = 1 OR id = 2 AND team = 'core'` would also return ada
         (is (= (column (repo/all r
-                         (-> (query/from :members)
+                         (-> (query/table :members)
                            (query/where [:fragment "id = ? OR id = ?" 1 2])
                            (query/where {:team "core"})))
                  :name)
               ["grace"])))))
   (test "a count, a sum and an existence over a union, a limit or a distinct on are over its rows"
     (with-tables (fn (r)
-                   (let (names (-> (query/from :members)
+                   (let (names (-> (query/table :members)
                                  (query/select [:name])
-                                 (query/union (-> (query/from :organisations)
+                                 (query/union (-> (query/table :organisations)
                                                 (query/select [:name])))))
                      (is (= (repo/count-rows r names) 5))
                      (is (= (get (repo/fetch-by r names {:name "acme"}) :name) "acme")))
                    (is (= (repo/count-rows r
-                            (-> (query/from :members) (query/order-by :id) (query/limit 2)))
+                            (-> (query/table :members) (query/order-by :id) (query/limit 2)))
                          2))
                    (is (= (repo/count-rows r
-                            (-> (query/from :members)
+                            (-> (query/table :members)
                               (query/distinct-on [:organisation_id])
                               (query/order-by :organisation_id)))
                          2))
                    (is (= (repo/aggregate r
-                            (-> (query/from :members) (query/order-by :age) (query/limit 2))
+                            (-> (query/table :members) (query/order-by :age) (query/limit 2))
                             :sum :age)
                          51))
                    (is (repo/exists? r
-                         (-> (query/from :members)
+                         (-> (query/table :members)
                            (query/group-by [:organisation_id])
                            (query/select [:organisation_id]))))
                    (is (= (repo/count-rows r
-                            (query/where (query/from :members) {:organisation_id 1}))
+                            (query/where (query/table :members) {:organisation_id 1}))
                          2)))))
   (test "an update over two joins, each naming the table it writes"
     (with-tables (fn (r)
@@ -322,7 +322,7 @@
                      :plans [{:member_id 1 :tier "pro"} {:member_id 3 :tier "pro"}]
                      {:returning :none})
                    (let (updated (repo/update-all r
-                                   (-> (query/from :members :m)
+                                   (-> (query/table :members :m)
                                      (query/join :organisations
                                        :o [:= :o.id [:col :m.organisation_id]])
                                      (query/join :plans :p [:= :p.member_id [:col :m.id]])
@@ -333,14 +333,14 @@
     (with-tables
       (fn (r)
         (is (= (repo/one r
-                 (-> (query/from :members)
+                 (-> (query/table :members)
                    (query/select {:most [:greatest :age 50]
                                   :none [:nullif :name "ada"]
                                   :least [:least :age 20]})
                    (query/where {:id 1})))
               {:most 50 :none nil :least 20}))
         (is (= (count (repo/all r
-                        (-> (query/from :members)
+                        (-> (query/table :members)
                           (query/select {:at [:cast
                                                [:literal "2026-10-18 10:00:00+00"]
                                                "timestamp(0) with time zone"]}))))
@@ -350,7 +350,7 @@
           :members [{:id 1 :name "ADA"} {:id 2 :name "GRACE"}]
           {:on-conflict {:target [:id] :do [:name] :where [:= :members.age 36]} :returning :none})
         (is (= (column (repo/all r
-                         (-> (query/from :members)
+                         (-> (query/table :members)
                            (query/where [:in :id [1 2]])
                            (query/order-by :id)))
                  :name)
@@ -363,15 +363,15 @@
         (repo/transaction r
           (fn (tx)
             ;; xmax names the locking transaction once FOR UPDATE has taken the row
-            (repo/fetch-by tx (query/lock (query/from :members) :update) {:id 1})
+            (repo/fetch-by tx (query/lock (query/table :members) :update) {:id 1})
             (is (not (= (get (repo/one tx
-                               (-> (query/from :members)
+                               (-> (query/table :members)
                                  (query/select {:locker [:cast :xmax :text]})
                                  (query/where {:id 1})))
                           :locker)
                        "0")))
             (is (= (get (repo/one tx
-                          (-> (query/from :members)
+                          (-> (query/table :members)
                             (query/select {:locker [:cast :xmax :text]})
                             (query/where {:id 2})))
                      :locker)
@@ -381,12 +381,12 @@
   :isolated (test "exists? and count-rows over a grouped query that selects nothing count its groups"
     (with-tables (fn (r)
                    (is (repo/exists? r
-                         (-> (query/from :members) (query/group-by [:organisation_id]))))
+                         (-> (query/table :members) (query/group-by [:organisation_id]))))
                    (is (= (repo/count-rows r
-                            (-> (query/from :members) (query/group-by [:organisation_id])))
+                            (-> (query/table :members) (query/group-by [:organisation_id])))
                          2))
                    (is (= (repo/count-rows r
-                            (-> (query/from :members)
+                            (-> (query/table :members)
                               (query/group-by [:organisation_id])
                               (query/having [:> [:count] 1])))
                          1))))))
