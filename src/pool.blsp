@@ -59,7 +59,7 @@
   (let (parent (self)
         pairs (into []
                 (map (range n)
-                  (fn (i)
+                  (fn (_i)
                     (let (cr (ref))
                       {:ref cr :pid (spawn (connection/boot opts parent cr))})))))
     (into [] (map pairs await-started))))
@@ -82,7 +82,7 @@
       (if (and (includes? (get state :members) pid) (not (includes? (get state :free) pid)))
         (run (give-back state pid))
         (run state)))
-    ([:down m pid reason]
+    ([:down _m pid _reason]
       (if (includes? (get state :members) pid)
         ;; a connection died — drop it (clearing any borrow record) and respawn a replacement
         (run (respawn (remove-conn (clear-borrow state pid) pid)))

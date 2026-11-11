@@ -69,5 +69,5 @@
     (let (st (start "user" "pencil" *client-nonce*))
       (is (= (first (try
                       (continue st "r=zzzznonce,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096")
-                      (catch e [:threw])))
+                      (catch _e [:threw])))
             :threw)))))
