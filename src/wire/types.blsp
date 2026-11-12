@@ -42,7 +42,7 @@
 
 (defn bytea->bytes (text)
   "Postgres bytea text format is `\\x` + hex; decode to a byte vector."
-  (hex-decode-bytes (string/substring text 2 (string/length text))))
+  (hex-decode-bytes (string/substring text 2 (count text))))
 
 ;; ---- encode: Brood value -> wire param --------------------------------------
 
@@ -58,10 +58,10 @@
     ;; The bytes value is a LEAF of the iolist: it reaches `tcp/send` without being walked.
     ;; It used to be expanded to one Brood codepoint per byte and collapsed again, so
     ;; publishing a tarball did two interpreted passes over every byte of it.
-    (bytes? value) [(int32-be (bytes/length value)) value]
+    (bytes? value) [(int32-be (count value)) value]
     else
       (let (encoded (utf8-bytes (param->text value)))
-        [(int32-be (bytes/length encoded)) encoded])))
+        [(int32-be (count encoded)) encoded])))
 
 (defn param-format-code (value)
   "The Bind parameter format code for `value`: 1 (binary) for a `bytes` value, else 0

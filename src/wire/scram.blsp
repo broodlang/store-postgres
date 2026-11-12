@@ -37,13 +37,13 @@
     (empty? parts) nil
     (string-prefix? (first parts) prefix)
       (string/substring (first parts)
-        (string/length prefix)
-        (string/length (first parts)))
+        (count prefix)
+        (count (first parts)))
     else (attr-find (rest parts) prefix)))
 
 (defn string-prefix? (s prefix)
-  (and (>= (string/length s) (string/length prefix))
-    (= (string/substring s 0 (string/length prefix)) prefix)))
+  (and (>= (count s) (count prefix))
+    (= (string/substring s 0 (count prefix)) prefix)))
 
 (defn continue (state server-first)
   "Process server-first; compute the client proof and the expected server signature.

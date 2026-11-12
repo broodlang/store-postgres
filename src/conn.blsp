@@ -123,13 +123,13 @@
     (handshake (assoc conn :scram st))))
 
 (defn scram-continue (conn body)
-  (let (server-first (slice->utf8 body 4 (bytes/length body))
+  (let (server-first (slice->utf8 body 4 (count body))
         st (scram/continue (get conn :scram) server-first))
     (send-message (get conn :sock) (sasl-response (get st :final)))
     (handshake (assoc conn :scram st))))
 
 (defn scram-finish (conn body)
-  (let (server-final (slice->utf8 body 4 (bytes/length body)))
+  (let (server-final (slice->utf8 body 4 (count body)))
     (if (= (scram/finish (get conn :scram) server-final) :ok)
       (handshake conn)
       (fail :auth "SCRAM server verification failed"))))
@@ -309,7 +309,7 @@
 
 (defn buffered (conn)
   "Unconsumed byte count in the conn's buffer (bytes from `:off` to the end)."
-  (- (bytes/length (get conn :buf)) (get conn :off)))
+  (- (count (get conn :buf)) (get conn :off)))
 
 (defn read-frame (conn)
   "Pull one complete backend message. Returns `[type body conn']` where `type` is
@@ -356,8 +356,8 @@
                            :timeout true
                            :message "store: timed out waiting for server"})))
           buf (get conn :buf)
-          kept (bytes/slice buf (get conn :off) (bytes/length buf)))
-      (fill-to (assoc conn :buf (bytes/concat kept more) :off 0) n))))
+          kept (bytes/slice buf (get conn :off) (count buf)))
+      (fill-to (assoc conn :buf (bytes/append kept more) :off 0) n))))
 (sig fill-to (conn int -> conn))
 
 ;; ---- backend message decoders -----------------------------------------------

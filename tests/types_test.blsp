@@ -30,13 +30,13 @@
 (describe "types: encode bound parameters"
   (test "nil becomes a -1 length (SQL NULL), no value bytes"
     (let (p (iolist->bytes (encode-param nil)))
-      (is (= (bytes/length p) 4))
+      (is (= (count p) 4))
       (is (= (octet-at p 0) 255))
       (is (= (octet-at p 3) 255))))
   (test "an int is length-prefixed text"
     (let (p (iolist->bytes (encode-param 42)))
       (is (= (read-int32 p 0) 2)) ; length of "42"
-      (is (= (slice->utf8 p 4 (bytes/length p)) "42"))))
+      (is (= (slice->utf8 p 4 (count p)) "42"))))
   ;; The point of the iolist: a bytes parameter reaches the wire as itself, never expanded
   ;; to one codepoint per byte and back. A tarball paid that twice per publish.
   (test "a bytes parameter is carried through as a leaf, length-prefixed"

@@ -19,11 +19,11 @@
     ;; `cstring` answers an iolist now — the NUL is a byte leaf, and the text is UTF-8
     ;; encoded by the flatten rather than walked here.
     (let (s (iolist->bytes (cstring "user")))
-      (is (= (bytes/length s) 5))
+      (is (= (count s) 5))
       (is (= (read-cstring s 0) ["user" 5]))))
   (test "a cstring's length is its UTF-8 byte count, not its codepoint count"
     (let (s (iolist->bytes (cstring "café")))
-      (is (= (bytes/length s) 6)) ; 5 UTF-8 bytes + NUL
+      (is (= (count s) 6)) ; 5 UTF-8 bytes + NUL
       (is (= (read-cstring s 0) ["café" 6]))))
   (test "xor-bytes combines two equal-length byte strings"
     (is (= (xor-bytes (bytes 1 2 3) (bytes 1 1 1)) (bytes 0 3 2)))))

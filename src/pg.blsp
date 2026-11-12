@@ -163,7 +163,7 @@
   "Drop a leading `postgres://` or `postgresql://` scheme (or any other)."
   (let (marker "://"
         idx (index-of url marker))
-    (if (= idx -1) url (string/substring url (+ idx (string/length marker)) (string/length url)))))
+    (if (= idx -1) url (string/substring url (+ idx (count marker)) (count url)))))
 (sig strip-scheme (string -> string))
 
 (defn split-first (text separator)
@@ -173,7 +173,7 @@
     (if (= idx -1)
       [text nil]
       [(string/substring text 0 idx)
-        (string/substring text (+ idx (string/length separator)) (string/length text))])))
+        (string/substring text (+ idx (count separator)) (count text))])))
 
 (defn split-last (text separator)
   "Split `text` on the LAST occurrence of `separator` into `[before after]`. When the
@@ -186,7 +186,7 @@
     (if (= idx -1)
       ["" text]
       [(string/substring text 0 idx)
-        (string/substring text (+ idx (string/length separator)) (string/length text))])))
+        (string/substring text (+ idx (count separator)) (count text))])))
 
 (defn blank-default (value fallback)
   "`value` unless it is nil or empty, in which case `fallback`."
@@ -199,7 +199,7 @@
   of the statement."
   (str "\""
     (apply str
-      (map (range (string/length name))
+      (map (range (count name))
         (fn (i)
           (let (ch (string/substring name i (+ i 1)))
             (if (= ch "\"") "\"\"" ch)))))

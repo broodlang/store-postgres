@@ -18,7 +18,7 @@
   than the string. Flattening is one kernel call, and the result is a `bytes` leaf the
   outer flatten copies straight through."
   (let (b (iolist->bytes body))
-    [type (int32-be (+ 4 (bytes/length b))) b]))
+    [type (int32-be (+ 4 (count b))) b]))
 
 (defn startup-message (user database)
   "StartupMessage (no type byte): protocol version then NUL-terminated key/value
@@ -28,7 +28,7 @@
                  (if (nil? database) [] [(cstring "database") (cstring database)])
                  0]
         body (iolist->bytes [(int32-be *protocol-version*) params]))
-    [(int32-be (+ 4 (bytes/length body))) body]))
+    [(int32-be (+ 4 (count body))) body]))
 
 (defn password-message (text)
   "PasswordMessage ('p') for cleartext / md5 auth: a single CString."
@@ -38,7 +38,7 @@
   "SASLInitialResponse ('p'): the chosen mechanism name (CString), then the SASL
   data length (Int32) and the data itself (client-first)."
   (let (data (utf8-bytes client-first))
-    (framed "p" [(cstring mechanism) (int32-be (bytes/length data)) data])))
+    (framed "p" [(cstring mechanism) (int32-be (count data)) data])))
 
 (defn sasl-response (client-final)
   "SASLResponse ('p'): raw SASL data (client-final), no length prefix."

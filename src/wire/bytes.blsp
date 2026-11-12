@@ -75,7 +75,7 @@
   it was nested while being built. `tcp/send` must be handed `bytes` and not a string:
   since ADR-141 it UTF-8-encodes a string leaf, which would re-encode every byte ≥ 0x80
   into two wire bytes and corrupt any length prefix."
-  (bytes/concat io))
+  (bytes/append io))
 
 ;; ---- fixed-width big-endian integers ----------------------------------------
 
@@ -130,5 +130,5 @@
   "XOR two equal-length `bytes` values → `bytes`. An xor of two octets is an octet, which
 `bit/xor`'s `int` cannot say — the `bytes` constructor is what says it (and rejects it if
 ever it were not)."
-  (bytes (map (range (bytes/length a)) (fn (i) (bit/xor (bytes/at a i) (bytes/at b i))))))
+  (bytes (map (range (count a)) (fn (i) (bit/xor (bytes/at a i) (bytes/at b i))))))
 (sig xor-bytes (bytes bytes -> bytes))
