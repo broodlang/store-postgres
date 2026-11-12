@@ -109,7 +109,7 @@
 ;; ---- C strings (NUL-terminated) ---------------------------------------------
 
 (defn cstring (text)
-  "Text → a NUL-terminated CString, as an IOLIST — `bytes/concat` UTF-8-encodes the string
+  "Text → a NUL-terminated CString, as an IOLIST — `bytes/append` UTF-8-encodes the string
   itself, so nothing here walks it."
   [text 0])
 
