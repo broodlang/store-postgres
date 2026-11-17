@@ -11,7 +11,8 @@
   (:use wire/bytes)
   (:use wire/messages)
   (:alias wire/types)
-  (:alias wire/scram))
+  (:alias wire/scram)
+  (:shadow error-message))
 
 ;; ---- backend message types --------------------------------------------------
 ;; The type byte each backend message opens with. Named because `read-frame` answers the
