@@ -73,10 +73,11 @@
 
 (defn run (state)
   (receive
-    ([:checkout from r] (let (free (get state :free))
-                          (if (empty? free)
-                            (run (assoc state :waiters (waiters-push (get state :waiters) [from r])))
-                            (run (hand-out (assoc state :free (rest-v free)) (first free) from r)))))
+    ([:checkout from r]
+      (let (free (get state :free))
+        (if (empty? free)
+          (run (assoc state :waiters (waiters-push (get state :waiters) [from r])))
+          (run (hand-out (assoc state :free (rest-v free)) (first free) from r)))))
     ([:checkin pid]
       ;; accept only a live member that isn't already free (ignore dead/double checkin)
       (if (and (includes? (get state :members) pid) (not (includes? (get state :free) pid)))
