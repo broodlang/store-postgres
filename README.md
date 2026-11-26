@@ -76,6 +76,14 @@ A checkout waits at most `:checkout-timeout-ms` (5000 by default), then raises a
 `:connection` store-error; a dead pool raises at once. `:connect-timeout-ms` (20000)
 bounds one connection's open.
 
+**A watchdog heals a pool that is alive but gives nothing.** Every 15 s it runs a
+`SELECT 1` through the pool, as a request would. After 3 minutes of failed checks it logs
+an error and kills the pool process, which the supervisor restarts with fresh
+connections; with `:exit? true` (an app's deploy: hatch's `web/repo` sets it outside dev),
+checks still failing 5 minutes after the first failure, or a supervisor that is gone,
+exit the OS process with code 1 for the platform to restart. Settings go in the pool's
+`:watchdog` map (`pool/*watchdog-defaults*`), or `:watchdog false` for none.
+
 ## Publishing
 
 Releases go to [hive](https://github.com/broodlang/hive), the Brood package

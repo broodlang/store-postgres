@@ -61,7 +61,8 @@
 
 (defn start (opts)
   "Start a supervised pool and wait until its first connections are open. `opts` is the
-  connection opts plus `:size` (default 5), `:checkout-timeout-ms` and `:connect-timeout-ms`.
+  connection opts plus `:size` (default 5), `:checkout-timeout-ms`, `:connect-timeout-ms`
+  and `:watchdog` (a map of `watchdog` settings, or false for none; see `watch`).
   Returns the pool's handle, or throws the first connection's error (the pool is stopped
   then)."
   (let (name (keyword (str "store-postgres-pool-" (rand/token 8)))
@@ -78,14 +79,19 @@
         ready (await-ready handle
                 (+ (get opts :connect-timeout-ms *connect-timeout-ms*) 5000)))
     (if (= ready :ok)
-      handle
+      (let (settings (get opts :watchdog {}))
+        (if (= settings false)
+          handle
+          (assoc handle :watchdog (watch handle settings))))
       (do
         (stop handle)
         (throw ready)))))
 
 (defn stop (pool)
-  "Stop the pool: its connections close and its supervisor exits. Returns `:ok`, or
-  `:timeout` if the supervisor is still there after ten seconds."
+  "Stop the pool: its watchdog first, then its connections close and its supervisor exits.
+  Returns `:ok`, or `:timeout` if the supervisor is still there after ten seconds."
+  (when-let (watchdog (get pool :watchdog))
+    (exit watchdog :kill))
   (let (sup (get pool :supervisor)
         m (monitor sup))
     (gen/stop sup)
@@ -116,6 +122,139 @@
             (do
               (demonitor m)
               (connection-failure "store: the pool's connections did not open in time" true))))))))
+
+;; ---- the watchdog ---------------------------------------------------------------
+;; A pool can be alive and still give nothing: a production pool once stopped answering
+;; for a week while its process lived, and nothing restarted it. The watchdog asks the pool
+;; itself (a `SELECT 1` through `query`, so through checkout, as a request would) every
+;; `:check-ms`. When that has failed for `:restart-after-ms` it kills the pool process,
+;; which its supervisor restarts with fresh connections; when the checks still fail
+;; `:exit-after-ms` after the first failure and `:exit?` is set, it exits the OS process
+;; with code 1, for the platform to restart (an app's deploy sets `:exit?`, hatch's
+;; `web/repo` outside dev; a library or a test never wants it). Each step is logged at
+;; `:error`. It is not linked to the pool, so a pool that crashes does not take it along.
+
+(def *watchdog-defaults*
+  {:check-ms 15000
+   ;; a check that has not answered by then has failed (its probe is killed)
+   :probe-timeout-ms 10000
+   :restart-after-ms 180000
+   :exit-after-ms 300000
+   ;; and never on fewer failed checks than this in a row (a machine suspended between two
+   ;; checks must not count the time it slept)
+   :min-failures 3
+   :exit? false})
+
+(defn watch (pool settings)
+  "Start the watchdog of `pool` (a handle from `start`) with `settings` over
+  `*watchdog-defaults*` (`:log`, a `(fn (level message))`, and `:halt`, a `(fn (code))`,
+  replace how it logs and exits). Returns its pid; `stop` stops it."
+  (let (config (merge *watchdog-defaults* settings))
+    (spawn (watchdog-init pool config))))
+
+(defn watchdog-init (pool config)
+  (let (sup-mon (monitor (get pool :supervisor)))
+    (watchdog-loop pool config sup-mon fresh-watch)))
+
+(def fresh-watch {:failing-since nil :failures 0 :restarted-at nil})
+
+(defn watchdog-loop (pool config sup-mon state)
+  (receive
+    ;; `stop` kills the watchdog before it stops the supervisor, so a supervisor that goes
+    ;; while the watchdog lives went by itself: the pool is gone and will not come back.
+    ([:down ^sup-mon _ reason] (pool-gone config reason))
+    (after (get config :check-ms)
+      (watchdog-loop pool config sup-mon (watch-step pool config state (probe pool config))))))
+
+(defn probe (pool config)
+  "Whether a `SELECT 1` through the pool answers within `:probe-timeout-ms`."
+  (let (parent (self)
+        r (ref)
+        pid (spawn (send parent
+                     [:probe
+                       r
+                       (check-allow :discarded-catch
+                         (try (do (query pool "select 1") true) (catch _ false)))])))
+    (receive
+      ([:probe ^r ok] ok)
+      (after (get config :probe-timeout-ms)
+        (do
+          ;; the pool reclaims (and replaces) any connection it held
+          (exit pid :kill)
+          false)))))
+
+(defn watch-step (pool config state ok)
+  "The watchdog's state after a check that answered `ok`, acting on it: log a recovery,
+  restart the pool, or exit."
+  (let (now (os/now)
+        since (get state :failing-since))
+    (if ok
+      (do
+        (when since
+          (watch-log config
+            :warn (str "store-postgres watchdog: the database answers through the pool again, after "
+              (seconds (- now since))
+              " s of failed checks")))
+        fresh-watch)
+      (let (since (or since now)
+            failures (inc (get state :failures))
+            failing-ms (- now since)
+            restarted-at (get state :restarted-at)
+            state (assoc state :failing-since since :failures failures))
+        (when (= failures 1)
+          (watch-log config :warn "store-postgres watchdog: a check through the pool failed"))
+        (cond
+          (< failures (get config :min-failures)) state
+          (and (get config :exit?) restarted-at (>= failing-ms (get config :exit-after-ms)))
+            (do
+              (watch-log config
+                :error (str "store-postgres watchdog: DATABASE UNREACHABLE THROUGH THE POOL FOR "
+                  (seconds failing-ms)
+                  " s, and restarting the pool did not bring it back: EXITING with code 1 for the platform to restart this machine"))
+              ((get config :halt system/halt) 1)
+              state)
+          (>= (- now (or restarted-at since)) (get config :restart-after-ms))
+            (do
+              (watch-log config
+                :error (str "store-postgres watchdog: DATABASE UNREACHABLE THROUGH THE POOL FOR "
+                  (seconds failing-ms)
+                  " s ("
+                  failures
+                  " failed checks): RESTARTING THE POOL"))
+              (restart-pool pool config)
+              (assoc state :restarted-at now))
+          else state)))))
+
+(defn restart-pool (pool config)
+  "Kill the pool process; its supervisor starts a fresh one, with fresh connections."
+  (let (pid (pool-pid pool))
+    (if pid
+      (exit pid :kill)
+      (watch-log config :error "store-postgres watchdog: no pool process to restart"))))
+
+(defn pool-gone (config reason)
+  "The pool's supervisor exited by itself: no pool will come back. Exit when `:exit?`."
+  (watch-log config
+    :error (str "store-postgres watchdog: THE POOL'S SUPERVISOR EXITED ("
+      (pr-str reason)
+      "): the pool is gone for good"
+      (if (get config :exit?) "; EXITING with code 1 for the platform to restart this machine" "")))
+  (when (get config :exit?)
+    ((get config :halt system/halt) 1))
+  :gone)
+
+(defn watch-log (config level message)
+  "Log `message` at `level` through `:log`, else std `log` and, at `:error`, straight to
+  stderr as well (the logger is a process too, and an exit must not lose the line)."
+  (let (custom (get config :log))
+    (if custom
+      (custom level message)
+      (do
+        (log/log level message)
+        (when (= level :error)
+          (io/puts message :to *err*))))))
+
+(defn seconds (ms) (math/round (/ ms 1000)))
 
 ;; ---- the pool process ---------------------------------------------------------
 

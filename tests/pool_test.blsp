@@ -256,3 +256,81 @@
       (is (= (get err :timeout) true))
       (is (< (- (os/now) t0) 3000))
       (exit silent :kill))))
+
+;; ---- the watchdog ---------------------------------------------------------------
+
+(defn watchdog-settings (parent)
+  "Quick watchdog settings that report its log lines and its exit to `parent`."
+  {:check-ms 100
+   :probe-timeout-ms 500
+   :restart-after-ms 600
+   :exit-after-ms 1500
+   :min-failures 3
+   :exit? true
+   :log (fn (level message) (send parent [:watchdog-log level message]))
+   :halt (fn (code) (send parent [:watchdog-halt code]))})
+
+(defn await-log (needle ms)
+  "The first watchdog log line containing `needle` within `ms`, or nil."
+  (receive
+    ([:watchdog-log _ message] (if (includes? message needle) message (await-log needle ms)))
+    (after ms nil)))
+
+(describe "pool watchdog"
+  :isolated (test "a pool whose checks keep failing is restarted, then the process exits"
+    (let ([proxy port] (proxy-start (get (opts) :port))
+          parent (self)
+          p (pool/start (assoc (opts)
+                          :port port
+                          :size 2
+                          :checkout-timeout-ms 200
+                          :watchdog (watchdog-settings parent)))
+          old (pool/pool-pid p))
+      (is (= (one-int (pool/query p "select 1")) 1))
+      (proxy-cut proxy)
+      ;; it says so, restarts the pool process...
+      (is (not (nil? (await-log "RESTARTING THE POOL" 5000))))
+      (is (= (eventually (fn () (let (now (pool/pool-pid p)) (and now (not (= now old))))) 5000)
+            true))
+      ;; ...and when that does not bring the database back, exits with code 1
+      (is (not (nil? (await-log "EXITING with code 1" 5000))))
+      (is (= (receive ([:watchdog-halt code] code) (after 5000 :none)) 1))
+      ;; the database back, the restarted pool serves through the same handle
+      (proxy-restore proxy)
+      (is (= (eventually (fn () (one-int (pool/query p "select 3"))) 10000) 3))
+      (is (not (nil? (await-log "answers through the pool again" 5000))))
+      (pool/stop p)
+      (exit proxy :kill)))
+  (test "a short outage only logs; the pool is left alone"
+    (let ([proxy port] (proxy-start (get (opts) :port))
+          parent (self)
+          p (pool/start (assoc (opts)
+                          :port port
+                          :size 1
+                          :checkout-timeout-ms 200
+                          :watchdog (assoc (watchdog-settings parent) :restart-after-ms 60000)))
+          old (pool/pool-pid p))
+      (proxy-cut proxy)
+      (is (not (nil? (await-log "a check through the pool failed" 5000))))
+      (proxy-restore proxy)
+      (is (not (nil? (await-log "answers through the pool again" 10000))))
+      (is (= (pool/pool-pid p) old))
+      (pool/stop p)
+      (exit proxy :kill)))
+  (test "a pool whose supervisor goes by itself makes the process exit"
+    (let (parent (self)
+          p (pool/start (assoc (opts) :size 1 :watchdog (watchdog-settings parent))))
+      (exit (get p :supervisor) :kill)
+      (is (not (nil? (await-log "gone for good" 5000))))
+      (is (= (receive ([:watchdog-halt code] code) (after 5000 :none)) 1))))
+  (test "stop stops the watchdog, and :watchdog false starts none"
+    (let (p (pool/start (assoc (opts) :size 1 :watchdog {:exit? true :halt (fn (_) nil)}))
+          watchdog (get p :watchdog))
+      (is (not (nil? watchdog)))
+      (when watchdog
+        (is (proc/alive? watchdog))
+        (pool/stop p)
+        (is (= (eventually (fn () (not (proc/alive? watchdog))) 2000) true))))
+    (let (p (pool/start (assoc (opts) :size 1 :watchdog false)))
+      (is (nil? (get p :watchdog)))
+      (pool/stop p))))
