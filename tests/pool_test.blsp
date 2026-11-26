@@ -7,11 +7,12 @@
   (:alias pool))
 
 (defn opts ()
-  {:host (or (os/env "PGHOST") "127.0.0.1")
-   :port (string/->number (or (os/env "PGPORT") "5432"))
-   :user (or (os/env "PGUSER") "postgres")
-   :password (or (os/env "PGPASSWORD") "postgres")
-   :database (or (os/env "PGDATABASE") "postgres")})
+  (let (port (string/->number (or (os/env "PGPORT") "5432")))
+    {:host (or (os/env "PGHOST") "127.0.0.1")
+     :port (if (int? port) port 5432)
+     :user (or (os/env "PGUSER") "postgres")
+     :password (or (os/env "PGPASSWORD") "postgres")
+     :database (or (os/env "PGDATABASE") "postgres")}))
 
 (defn one-int (result)
   "First column of the first row of a result map."
@@ -94,3 +95,164 @@
       (receive (after 50 nil))
       (is (= (one-int (pool/query p "select now() = statement_timestamp()")) true))
       (pool/stop p))))
+
+;; ---- supervision and reconnecting ---------------------------------------------
+
+(defn caught (f)
+  "What `(f)` throws, or nil when it returns."
+  (try (do (f) nil) (catch e e)))
+
+(defn pause (ms) (receive (after ms nil)))
+
+(defn eventually (f ms)
+  "The first value of `(f)` that is neither a throw nor false, trying every 100 ms for up to
+  `ms`; :gave-up after that."
+  (let (deadline (+ (os/now) ms))
+    ((fn go
+       ()
+       (let (v (check-allow :discarded-catch (try (f) (catch _ false))))
+         (cond
+           v v
+           (>= (os/now) deadline) :gave-up
+           else (do (pause 100) (go))))))))
+
+(defn backend-pids (p n)
+  "The server-side pids of `n` of the pool's connections, all checked out at once."
+  (let (conns (into [] (map (range n) (fn (_) (pool/checkout p))))
+        pids (into []
+               (map conns
+                 (fn (c) (one-int (get (connection/query c "select pg_backend_pid() as b") 1))))))
+    (doseq (c conns) (pool/checkin p c))
+    pids))
+
+(defn live-backends (p)
+  "The server-side pids of every session the server has open now."
+  (into [] (map (get (pool/query p "select pid from pg_stat_activity") :rows) first)))
+
+(defn closed-on-server? (p pids)
+  (not (any? (live-backends p) (fn (b) (includes? pids b)))))
+
+;; A relay to the test server on a port of its own, which can cut every connection through
+;; it and refuse new ones (`proxy-cut`), as an unreachable server would, and let them
+;; through again (`proxy-restore`). One process owns every socket and copies bytes across.
+(defn proxy-start (target-port)
+  "Start the relay; `[pid port]`."
+  (let (parent (self)
+        pid (spawn (let (listener (tcp/listen "127.0.0.1" 0))
+                     (send parent [:proxy-port (tcp/local-port listener)])
+                     (proxy-loop target-port {} true))))
+    [pid (receive ([:proxy-port port] port) (after 5000 nil))]))
+
+(defn proxy-loop (target-port pairs up?)
+  (receive
+    ([:tcp-accept _listener client]
+      (if up?
+        (let (upstream (tcp/connect "127.0.0.1" target-port))
+          (tcp/set-binary upstream true)
+          ;; binary from the first byte, then start reading it here
+          (tcp/set-binary client true)
+          (tcp/controlling-process client (self))
+          (proxy-loop target-port (assoc pairs client upstream upstream client) up?))
+        (do
+          (tcp/close client)
+          (proxy-loop target-port pairs up?))))
+    ([:tcp sock data] (when-let (peer (get pairs sock)) (tcp/send peer data))
+      (proxy-loop target-port pairs up?))
+    ([:tcp-closed sock]
+      (let (peer (get pairs sock))
+        (tcp/close sock)
+        (when peer (tcp/close peer))
+        (proxy-loop target-port (dissoc (dissoc pairs sock) peer) up?)))
+    ([:cut from] (doseq (sock (keys pairs)) (tcp/close sock))
+      (send from [:proxy :cut])
+      (proxy-loop target-port {} false))
+    ([:restore from] (send from [:proxy :restored])
+      (proxy-loop target-port pairs true))))
+
+(defn proxy-cut (proxy)
+  (send proxy [:cut (self)])
+  (receive ([:proxy :cut] nil) (after 5000 nil)))
+
+(defn proxy-restore (proxy)
+  (send proxy [:restore (self)])
+  (receive ([:proxy :restored] nil) (after 5000 nil)))
+(describe "pool supervision"
+  :isolated (test "a killed connection is replaced and its session closes on the server"
+    (let (p (pool/start (assoc (opts) :size 2))
+          before (backend-pids p 2)
+          victim (pool/checkout p)
+          victim-backend (one-int (get (connection/query victim "select pg_backend_pid() as b") 1)))
+      (exit victim :kill)
+      (pool/checkin p victim)
+      ;; its socket closed with it, so the server ended that session
+      (is (= (eventually (fn () (closed-on-server? p [victim-backend])) 5000) true))
+      ;; and the pool is back to two connections, one of them new
+      (let (now (eventually (fn () (backend-pids p 2)) 5000))
+        (is (= (count now) 2))
+        (is (not (includes? now victim-backend))))
+      (is (= (count before) 2))
+      (pool/stop p)))
+  (test "a pool that dies is restarted by its supervisor, and its connections close"
+    (let (p (pool/start (assoc (opts) :size 2))
+          before (backend-pids p 2)
+          old (pool/pool-pid p))
+      (when old (exit old :kill))
+      ;; the same handle serves again, through a new pool process
+      (is (= (eventually (fn () (one-int (pool/query p "select 4"))) 5000) 4))
+      (is (not (= (pool/pool-pid p) old)))
+      ;; the dead pool's connections died with it: their sessions are gone on the server
+      (is (= (eventually (fn () (closed-on-server? p before)) 5000) true))
+      (pool/stop p)))
+  (test "a server that goes away and comes back is reconnected to without help"
+    (let ([proxy port] (proxy-start (get (opts) :port))
+          p (pool/start (assoc (opts) :port port :size 2 :checkout-timeout-ms 1000)))
+      (is (= (one-int (pool/query p "select 1")) 1))
+      (proxy-cut proxy)
+      ;; while it is away a query fails, and quickly
+      (let (t0 (os/now)
+            err (caught (fn () (pool/query p "select 2"))))
+        (is (= (get err :store-error) :connection))
+        (is (< (- (os/now) t0) 3000)))
+      (pause 1000)
+      (proxy-restore proxy)
+      ;; the pool reconnects by itself, to its full size
+      (is (= (eventually (fn () (one-int (pool/query p "select 3"))) 10000) 3))
+      (is (= (count (eventually (fn () (backend-pids p 2)) 10000)) 2))
+      (pool/stop p)
+      (exit proxy :kill)))
+  (test "checking out of a pool that is gone fails at once"
+    (let (p (pool/start (assoc (opts) :size 1))
+          before (backend-pids p 1))
+      (exit (get p :supervisor) :kill)
+      (eventually (fn () (nil? (pool/pool-pid p))) 5000)
+      (let (t0 (os/now)
+            err (caught (fn () (pool/checkout p))))
+        (is (= (get err :store-error) :connection))
+        ;; without waiting out the checkout deadline
+        (is (< (- (os/now) t0) 500)))
+      ;; the dead pool's connection closed with it
+      (let (q (pool/start (assoc (opts) :size 1)))
+        (is (= (eventually (fn () (closed-on-server? q before)) 5000) true))
+        (pool/stop q))))
+  (test "a checkout that gets nothing in time raises, and leaves no connection behind"
+    (let (p (pool/start (assoc (opts) :size 1 :checkout-timeout-ms 300))
+          held (pool/checkout p)
+          t0 (os/now)
+          err (caught (fn () (pool/checkout p))))
+      (is (= (get err :store-error) :connection))
+      (is (= (get err :timeout) true))
+      (is (< (- (os/now) t0) 2000))
+      (pool/checkin p held)
+      ;; the one connection still serves
+      (is (= (one-int (pool/query p "select 8")) 8))
+      (pool/stop p)))
+  (test "a pool that never answers gives a checkout up at its deadline"
+    (let (silent (spawn (receive (after 60000 nil)))
+          name (keyword (str "silent-pool-" (rand/token 4)))
+          _ (proc/register name silent)
+          handle {:name name :supervisor silent :checkout-timeout-ms 200}
+          t0 (os/now)
+          err (caught (fn () (pool/checkout handle))))
+      (is (= (get err :timeout) true))
+      (is (< (- (os/now) t0) 3000))
+      (exit silent :kill))))

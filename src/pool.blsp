@@ -1,75 +1,143 @@
 (defmodule pool
-  "A fixed-size connection pool that also supervises its connections.
+  "A fixed-size connection pool, run under a supervisor, that keeps its connections open by
+  itself.
 
-  The pool process opens `:size` connection processes, monitors each, and respawns
-  any that die — so supervision is folded into the pool rather than split across a
-  separate supervisor (which would force a pid-reconciliation dance every restart).
+  The shape, and why each part is there (a production pool once stopped answering for
+  good while its process stayed alive, so every request waited on it forever):
 
-  Clients check a connection out, use it, and check it back in; `query`/`exec` do
-  that round-trip. Checkouts beyond the pool size queue until one frees up. State:
+  - **The pool process runs under `std/proc/supervisor`**, registered under a name of its
+    own. A pool that crashes is restarted with fresh connections, and callers reach it by
+    that name through the handle `start` returns, never by a pid that goes stale.
+  - **Its connection processes are linked to it** (`spawn-link`; the pool traps exits).
+    A connection that dies reaches the pool as `[:EXIT …]`; a pool that dies takes its
+    connections with it, so their sockets close instead of sitting idle on the server.
+  - **The pool never blocks.** Opening a connection is a process of its own that reports
+    `[:started]` / `[:start-failed]` back into the pool's loop. Each open has a deadline;
+    while the server cannot be reached the pool retries with a doubling backoff (up to
+    `*retry-max-ms*`), so it is back to full size by itself once the server is.
+  - **`checkout` monitors the pool and has a deadline**: a dead pool raises at once, a
+    pool with nothing to give raises when the deadline passes — a `:connection`
+    store-error, never a hang. A request that gives up withdraws from the queue, and a
+    connection handed over in that moment goes straight back.
 
-    {:opts    connection opts, for (re)spawning
-     :members all live connection pids
-     :free    the subset currently available
-     :waiters an amortized-O(1) FIFO ({:in :out}, see below) of [from ref] pairs
-              awaiting a connection}"
+  Clients check a connection out, use it, and check it back in; `query`/`exec` do that
+  round-trip. Checkouts beyond the pool size queue until one frees up. State:
+
+    {:opts     connection opts, for opening more
+     :size     the number of connections the pool keeps
+     :sup      the supervisor (its exit ends the pool)
+     :members  live connection pids
+     :free     the subset currently available (a stack: see `give-back`)
+     :pending  pid -> {:ref :deadline} for each connection being opened
+     :retry-at when the pool may open again after a failed open (ms), :backoff the wait
+     :borrowed connection pid -> {:by borrower :mon monitor}
+     :waiters  an amortized-O(1) FIFO ({:in :out}, see below) of [from ref] pairs
+     :ready    whether the first round of opens is in, :first-error its first failure,
+               :ready-waiters who asked for it (`start`)}"
   (:alias connection))
+
+;; ---- tuning -----------------------------------------------------------------
+
+;; How long `checkout` waits for a connection (a pool's own `:checkout-timeout-ms` wins).
+(def *checkout-timeout-ms* 5000)
+
+;; How long one connection may take to open — connect, TLS-free startup and SCRAM — before
+;; the pool gives up on it and tries again (a pool's own `:connect-timeout-ms` wins).
+(def *connect-timeout-ms* 20000)
+
+;; The retry backoff after a failed open: it starts here, doubles per failure, and stops
+;; growing at the max, so an unreachable server is tried every few seconds and never
+;; hammered, and a server that comes back is found within `*retry-max-ms*`.
+(def *retry-min-ms* 100)
+(def *retry-max-ms* 5000)
+
+;; How a pool that crashes is restarted: at most this many restarts in this many seconds
+;; before the supervisor gives up (a crash loop is a bug; a server that is down is not a
+;; crash, the pool waits that out by itself).
+(def *max-restarts* 20)
+(def *max-restart-seconds* 60)
 
 ;; ---- lifecycle --------------------------------------------------------------
 
 (defn start (opts)
-  "Start a pool. `opts` is the connection opts plus `:size` (default 5). Blocks until
-  every connection is up; returns the pool pid, or throws if a connection fails."
-  (let (size (get opts :size 5)
-        parent (self)
-        r (ref)
-        pid (spawn (boot opts size parent r)))
+  "Start a supervised pool and wait until its first connections are open. `opts` is the
+  connection opts plus `:size` (default 5), `:checkout-timeout-ms` and `:connect-timeout-ms`.
+  Returns the pool's handle, or throws the first connection's error (the pool is stopped
+  then)."
+  (let (name (keyword (str "store-postgres-pool-" (rand/token 8)))
+        sup (supervisor/start
+              [{:id :pool
+                :name name
+                :start (fn () (let (sup (self)) (spawn-link (init opts sup))))
+                ;; graceful first (close each connection with a Terminate), then a kill
+                :shutdown 5000}]
+              {:max-restarts *max-restarts* :max-seconds *max-restart-seconds*})
+        handle {:name name
+                :supervisor sup
+                :checkout-timeout-ms (get opts :checkout-timeout-ms *checkout-timeout-ms*)}
+        ready (await-ready handle
+                (+ (get opts :connect-timeout-ms *connect-timeout-ms*) 5000)))
+    (if (= ready :ok)
+      handle
+      (do
+        (stop handle)
+        (throw ready)))))
+
+(defn stop (pool)
+  "Stop the pool: its connections close and its supervisor exits. Returns `:ok`, or
+  `:timeout` if the supervisor is still there after ten seconds."
+  (let (sup (get pool :supervisor)
+        m (monitor sup))
+    (gen/stop sup)
     (receive
-      ([:started ^r] pid)
-      ([:start-failed ^r err] (throw err)))))
+      ([:down ^m _ _] :ok)
+      (after 10000 :timeout))))
 
-(defn boot (opts size parent r)
-  (let (outcome (try {:pids (open-parallel opts size)} (catch e {:error e})))
-    (if (get outcome :error)
-      (send parent [:start-failed r (get outcome :error)])
-      (let (pids (get outcome :pids)
-            pool (self))
-        (map pids monitor)
-        ;; Self-heal: a ticker nudges the pool to replace any connections it couldn't
-        ;; respawn immediately (e.g. the DB was unreachable when they died), so the pool
-        ;; recovers on its own once the DB is back — no app restart (see `:replenish`).
-        (spawn (replenish-ticker pool))
-        (send parent [:started r])
-        (run {:opts opts :size size :members pids :free pids :waiters no-waiters :borrowed {}})))))
+(defn pool-pid (pool)
+  "The pid of the pool process behind handle `pool` right now, or nil (stopped, or between
+  a crash and its restart)."
+  (proc/whereis (get pool :name)))
 
-;; How often the pool retries reconnecting while below its target size.
-(def *replenish-ms* 5000)
+(defn await-ready (pool ms)
+  "Wait up to `ms` for the pool's first round of opens: `:ok`, or the first error."
+  (let (deadline (+ (os/now) ms)
+        pid (resolve pool deadline))
+    (if (nil? pid)
+      (connection-failure "store: the connection pool did not start" false)
+      (let (m (monitor pid)
+            r (ref))
+        (send pid [:await-ready (self) r])
+        (receive
+          ([:reply ^r v] (do (demonitor m) v))
+          ([:down ^m _ reason]
+            (connection-failure (str "store: the connection pool died while starting: " reason)
+              false))
+          (after (remaining deadline)
+            (do
+              (demonitor m)
+              (connection-failure "store: the pool's connections did not open in time" true))))))))
 
-(defn replenish-ticker (pool)
-  "Send `pool` a `:replenish` nudge every *replenish-ms*. Runs as a child of the pool so
-  the retry cadence is independent of request traffic."
-  (receive (after *replenish-ms* :tick))
-  (send pool [:replenish])
-  (replenish-ticker pool))
+;; ---- the pool process ---------------------------------------------------------
 
-(defn open-parallel (opts n)
-  "Open `n` connections concurrently — each connects in its own green process, so
-  the (PBKDF2-dominated) SCRAM handshakes overlap and startup is ~one handshake, not
-  n of them. Spawn all, then collect each `[:started]`."
-  (let (parent (self)
-        pairs (into []
-                (map (range n)
-                  (fn (_i)
-                    (let (cr (ref))
-                      {:ref cr :pid (spawn (connection/boot opts parent cr))})))))
-    (into [] (map pairs await-started))))
-
-(defn await-started (p)
-  (let (cr (get p :ref)
-        pid (get p :pid))
-    (receive
-      ([:started ^cr] pid)
-      ([:start-failed ^cr e] (throw e)))))
+(defn init (opts sup)
+  "The pool process: trap exits (its connections are linked to it), start opening its
+  connections, and serve."
+  (proc/trap-exit true)
+  (let (state (open-missing {:opts opts
+                             :size (get opts :size 5)
+                             :sup sup
+                             :members []
+                             :free []
+                             :pending {}
+                             :retry-at 0
+                             :backoff 0
+                             :borrowed {}
+                             :waiters no-waiters
+                             :ready false
+                             :first-error nil
+                             :ready-waiters []})
+        initial (into [] (keys (get state :pending))))
+    (run (assoc state :initial initial :ready (empty? initial)))))
 
 (defn run (state)
   (receive
@@ -78,32 +146,163 @@
         (if (empty? free)
           (run (assoc state :waiters (waiters-push (get state :waiters) [from r])))
           (run (hand-out (assoc state :free (rest-v free)) (first free) from r)))))
+    ;; A checkout that gave up at its deadline. Whatever it was handed before this arrived
+    ;; is already on its way and comes back as a checkin; `:cancelled` follows it, so the
+    ;; caller knows nothing more is coming.
+    ([:cancel from r] (send from [:cancelled r])
+      (run (assoc state :waiters (waiters-remove (get state :waiters) r))))
     ([:checkin pid]
       ;; accept only a live member that isn't already free (ignore dead/double checkin)
       (if (and (includes? (get state :members) pid) (not (includes? (get state :free) pid)))
         (run (give-back state pid))
         (run state)))
+    ([:started r] (run (connected state r)))
+    ([:start-failed r err]
+      (run (open-missing (open-failed state (pending-by-ref (get state :pending) r) err))))
+    ([:EXIT pid reason] (exited state pid reason))
+    ;; A BORROWER died holding a connection (e.g. a request handler hard-killed on
+    ;; timeout, which would otherwise leak the connection out of the pool forever). Its
+    ;; connection is in whatever state the borrower left it — inside an open transaction,
+    ;; or mid-reply — so it is NOT handed on: the next borrower's statements would run
+    ;; inside that transaction and hold its locks. Kill it (the server rolls back when the
+    ;; socket closes) and open a fresh one in its place. Its own `[:EXIT]` then arrives
+    ;; as a non-member's, and is ignored.
     ([:down _m pid _reason]
-      (if (includes? (get state :members) pid)
-        ;; a connection died — drop it (clearing any borrow record) and respawn a replacement
-        (run (respawn (remove-conn (clear-borrow state pid) pid)))
-        ;; a BORROWER died holding a connection (e.g. a request handler hard-killed on
-        ;; timeout, which would otherwise leak the connection out of the pool forever).
-        ;; Its connection is in whatever state the borrower left it — inside an open
-        ;; transaction, or mid-reply — so it is NOT handed on: the next borrower's
-        ;; statements would run inside that transaction and hold its locks. Kill it (the
-        ;; server rolls back when the socket closes) and open a fresh one in its place.
-        ;; Its own :down then arrives as a non-member's with no borrow, and is ignored.
-        (let (conn (conn-of-borrower (get state :borrowed) pid))
-          (if (nil? conn)
-            (run state)
+      (let (conn (conn-of-borrower (get state :borrowed) pid))
+        (if (nil? conn)
+          (run state)
+          (do
+            (exit conn :kill)
+            (run (open-missing (remove-conn (clear-borrow state conn) conn)))))))
+    ([:await-ready from r]
+      (if (get state :ready)
+        (do
+          (send from [:reply r (or (get state :first-error) :ok)])
+          (run state))
+        (run (assoc state :ready-waiters (conj (get state :ready-waiters) [from r])))))
+    ;; The supervisor stopping us: close each connection cleanly, then exit normally.
+    ([:$stop] (shut-down state))
+    ;; An open past its deadline, or the backoff over: give up on the one, try again.
+    (after (wait-ms state) (run (open-missing (expire state))))))
+
+(defn exited (state pid reason)
+  "A linked process exited: the supervisor (so the pool goes too), a member (replace it),
+  or a connection being opened (a failed open)."
+  (cond
+    ;; Trapping exits turns the supervisor's death into a message; die with it, which
+    ;; takes the connections down too.
+    (= pid (get state :sup)) (exit (self) :kill)
+    (includes? (get state :members) pid)
+      (run (open-missing (remove-conn (clear-borrow state pid) pid)))
+    (contains? (get state :pending) pid)
+      (run (open-missing (open-failed state
+                           pid
+                           {:store-error :connection
+                            :message (str "store: the connecting process died: " reason)})))
+    ;; one the pool already let go of (killed, or given up on): nothing to do
+    else (run state)))
+
+(defn shut-down (state)
+  (doseq (pid (keys (get state :pending)))
+    (exit pid :kill))
+  (doseq (pid (get state :members))
+    (connection/stop pid))
+  :stopped)
+
+;; ---- opening connections ------------------------------------------------------
+
+(defn open-missing (state)
+  "Start opening each connection the pool is short of — at once, or when the backoff after
+  a failed open is over."
+  (let (missing (shortfall state))
+    (if (and (> missing 0) (>= (os/now) (get state :retry-at)))
+      (fold (range missing) state (fn (acc _i) (open-one acc)))
+      state)))
+
+(defn shortfall (state)
+  "How many connections the pool is short of, counting those being opened."
+  (let (missing (- (get state :size) (+ (count (get state :members)) (count (get state :pending)))))
+    (if (int? missing) missing 0)))
+
+(defn open-one (state)
+  "Spawn one connection, linked to the pool, that reports `[:started]` or `[:start-failed]`
+  back here and then serves."
+  (let (opts (get state :opts)
+        pool (self)
+        r (ref)
+        pid (spawn-link (connection/boot opts pool r))
+        deadline (+ (os/now) (get opts :connect-timeout-ms *connect-timeout-ms*)))
+    (assoc state :pending (assoc (get state :pending) pid {:ref r :deadline deadline}))))
+
+(defn pending-by-ref (pending r)
+  "The pid of the open `pending` knows by ref `r`, or nil (one the pool gave up on)."
+  (fold (keys pending) nil (fn (acc pid) (if (= (get (get pending pid) :ref) r) pid acc))))
+
+(defn connected (state r)
+  "An open finished: the connection joins the pool and goes to a waiter or the free stack."
+  (let (pid (pending-by-ref (get state :pending) r))
+    (if (nil? pid)
+      ;; given up on at its deadline and killed already; its `[:started]` was on the way
+      state
+      (let (state (settle-first-round (assoc state
+                                        :pending (dissoc (get state :pending) pid)
+                                        :backoff 0)
+                    pid nil))
+        (give-back (assoc state :members (conj (get state :members) pid)) pid)))))
+
+(defn open-failed (state pid err)
+  "An open failed with `err`: forget it, and wait out a longer backoff before the next."
+  (if (nil? pid)
+    state
+    (let (backoff (math/min *retry-max-ms* (math/max *retry-min-ms* (* 2 (get state :backoff)))))
+      (settle-first-round (assoc state
+                            :pending (dissoc (get state :pending) pid)
+                            :backoff backoff
+                            :retry-at (+ (os/now) backoff))
+        pid err))))
+
+(defn expire (state)
+  "Give up on every open past its deadline: kill it and count it as failed."
+  (let (now (os/now))
+    (fold (into [] (get state :pending))
+      state
+      (fn (acc entry)
+        (let ([pid info] entry)
+          (if (>= now (get info :deadline))
             (do
-              (exit conn :kill)
-              (run (respawn (remove-conn (clear-borrow state conn) conn))))))))
-    ;; Periodic self-heal: replace connections while below target size.
-    ([:replenish] (run (maybe-replenish state)))
-    ([:stop from r] (map (get state :members) connection/stop)
-      (send from [:reply r :ok]))))
+              (exit pid :kill)
+              (open-failed acc
+                pid
+                {:store-error :connection
+                 :timeout true
+                 :message "store: timed out connecting to the server"}))
+            acc))))))
+
+(defn wait-ms (state)
+  "How long the pool's loop may wait for a message: until the nearest open deadline, or
+  the end of the backoff when the pool is short of connections."
+  (let (deadlines (map (into [] (get state :pending)) (fn (entry) (get (get entry 1) :deadline)))
+        times (if (> (shortfall state) 0) (cons (get state :retry-at) deadlines) deadlines))
+    (if (empty? times)
+      60000
+      (remaining (fold (rest times) (first times) math/min)))))
+
+(defn settle-first-round (state pid err)
+  "Count `pid` out of the first round of opens; once the round is in, answer whoever
+  waits on it (`start`) with `:ok` or its first error."
+  (let (initial (get state :initial))
+    (if (not (includes? initial pid))
+      state
+      (let (left (remove-pid initial pid)
+            state (assoc state :initial left :first-error (or (get state :first-error) err)))
+        (if (empty? left)
+          (do
+            (doseq (w (get state :ready-waiters))
+              (send (get w 0) [:reply (get w 1) (or (get state :first-error) :ok)]))
+            (assoc state :ready true :ready-waiters []))
+          state)))))
+
+;; ---- lending ------------------------------------------------------------------
 
 (defn hand-out (state pid borrower r)
   "Hand connection `pid` to `borrower`, recording the borrow and monitoring the borrower
@@ -121,13 +320,6 @@
 (defn conn-of-borrower (borrowed borrower)
   "The connection pid `borrower` currently holds, or nil."
   (fold (keys borrowed) nil (fn (acc k) (if (= (get (get borrowed k) :by) borrower) k acc))))
-
-(defn maybe-replenish (state)
-  "If the pool is below its target size, try to open one connection back. A no-op when
-  full; when reconnect fails (DB still down) the next tick retries."
-  (if (< (count (get state :members)) (get state :size))
-    (respawn state)
-    state))
 
 ;; ---- waiters: an amortized-O(1) FIFO ----------------------------------------
 ;; A plain vector made enqueue (`into … [w]`) and dequeue (`rest`) each O(waiters), so a
@@ -151,6 +343,12 @@
       (let (flipped (reverse (get q :in)))
         [(first flipped) {:in (list) :out (rest flipped)}])
       [(first out) (assoc q :out (rest out))])))
+
+(defn waiters-remove (q r)
+  "The queue without the waiter whose ref is `r` (one that gave up). O(waiters), and only
+  on a checkout's deadline."
+  (let (keep? (fn (w) (not (= (get w 1) r))))
+    {:in (seq/filter (get q :in) keep?) :out (seq/filter (get q :out) keep?)}))
 
 ;; ---- state helpers ----------------------------------------------------------
 
@@ -187,28 +385,76 @@
             w (first popped))
         (hand-out (assoc state :waiters (get popped 1)) pid (get w 0) (get w 1))))))
 
-(defn respawn (state)
-  "Open a fresh connection, monitor it, and put it into circulation. If reconnect
-  fails right now (e.g. the server is down), the pool runs degraded by one until the
-  next death triggers another attempt."
-  (let (outcome (try {:pid (connection/start (get state :opts))} (catch e {:error e})))
-    (if (get outcome :error)
-      state
-      (let (pid (get outcome :pid))
-        (monitor pid)
-        (give-back (assoc state :members (into (get state :members) [pid])) pid)))))
-
 ;; ---- client API -------------------------------------------------------------
 
 (defn checkout (pool)
-  "Block until a connection is available; return its pid."
-  (let (r (ref))
-    (send pool [:checkout (self) r])
-    (receive ([:reply ^r pid] pid))))
+  "Check a connection out of `pool` (a handle from `start`) and return its pid. Waits for
+  one up to the pool's `:checkout-timeout-ms` (5 s by default), through a restart of the
+  pool too; a pool that is gone, dies meanwhile, or has nothing to give in time raises a
+  `:connection` store-error instead of hanging."
+  (let (ms (get pool :checkout-timeout-ms *checkout-timeout-ms*)
+        deadline (+ (os/now) ms)
+        pid (resolve pool deadline))
+    (if (nil? pid)
+      (throw (connection-failure "store: the connection pool is not running" false))
+      (let (m (monitor pid)
+            r (ref))
+        (send pid [:checkout (self) r])
+        (receive
+          ([:reply ^r conn] (do (demonitor m) conn))
+          ([:down ^m _ reason]
+            (throw (connection-failure (str "store: the connection pool died: " reason) false)))
+          (after (remaining deadline)
+            (do
+              (send pid [:cancel (self) r])
+              (await-cancelled pid r m)
+              (throw (connection-failure (str "store: no connection from the pool within " ms " ms")
+                       true)))))))))
+
+(defn await-cancelled (pid r m)
+  "After a checkout gave up: give back whatever the pool handed over before it saw the
+  cancel, until its `[:cancelled]` (or its death) says nothing more is coming."
+  (receive
+    ([:reply ^r conn] (send pid [:checkin conn])
+      (await-cancelled pid r m))
+    ([:cancelled ^r] (demonitor m))
+    ([:down ^m _ _] nil)
+    (after 1000 (demonitor m))))
+
+(defn resolve (pool deadline)
+  "The pool process behind handle `pool`, waiting through a restart (when its name is
+  briefly unregistered) until `deadline`; nil once the deadline passes or the supervisor
+  is gone (the pool will not come back)."
+  (let (pid (pool-pid pool))
+    (cond
+      (not (nil? pid)) pid
+      (not (proc/alive? (get pool :supervisor))) nil
+      (>= (os/now) deadline) nil
+      else
+        (do
+          (pause 10)
+          (resolve pool deadline)))))
+
+(defn remaining (deadline)
+  "Milliseconds from now until `deadline` (an `os/now` time), never below zero."
+  (wait-time (- deadline (os/now))))
+
+(defn wait-time (ms)
+  "`ms` as a `receive` timeout: an int, never below zero."
+  (if (int? ms) (math/max 0 ms) 0))
+
+(defn connection-failure (message timeout?)
+  "A `:connection` store-error, flagged `:timeout` when it came from a deadline."
+  (if timeout?
+    {:store-error :connection :timeout true :message message}
+    {:store-error :connection :message message}))
 
 (defn checkin (pool pid)
-  "Return a checked-out connection to the pool."
-  (send pool [:checkin pid]))
+  "Return a checked-out connection to the pool. A pool restarted meanwhile does not know
+  it, and ignores it (the old pool's connections died with it)."
+  (let (p (pool-pid pool))
+    (when p (send p [:checkin pid]))
+    nil))
 
 (defn with-conn (pool f)
   "Check a connection out, run `(f pid)`, and check it back in even if `f` throws."
@@ -222,7 +468,7 @@
 
 ;; A checked-out connection can be dead through no fault of the caller — a proxy
 ;; closed it while it sat in the pool (keepalive narrows but can't fully close this
-;; race). Such a failure surfaces as a `:connection` store-error and the pool respawns
+;; race). Such a failure surfaces as a `:connection` store-error and the pool replaces
 ;; the dead member; retrying picks up a fresh one, so a transient close is invisible to
 ;; the caller. A genuine query error (`:query`) is NOT retried.
 (def *max-attempts* 3)
@@ -257,16 +503,10 @@
   (and (map? err) (= (get err :store-error) :connection)))
 
 (defn pause (ms)
-  "Sleep `ms` — a short backoff so the pool can respawn the dead member before retry."
+  "Sleep `ms` — a short backoff so the pool can replace a dead member before a retry."
   (receive (after ms nil)))
 
 (defn unwrap (tagged)
   (if (= (get tagged 0) :ok)
     (get tagged 1)
     (throw (get tagged 1))))
-
-(defn stop (pool)
-  "Stop the pool and all its connections."
-  (let (r (ref))
-    (send pool [:stop (self) r])
-    (receive ([:reply ^r v] v) (after 10000 :timeout))))

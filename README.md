@@ -66,6 +66,16 @@ skip its own parse and plan. Two things follow:
 queries stays on one connection rather than round-robining onto cold ones. Idle
 members are not stranded: every connection runs its own keepalive.
 
+**The pool keeps itself up.** It runs under a supervisor and is reached by name
+through the handle `pool/start` returns, so a pool that crashes is restarted with
+fresh connections and the same handle keeps working. Its connections are linked to
+it: a pool that dies takes them with it, and their sockets close. Opening a
+connection never blocks the pool; while the server is unreachable it retries with a
+backoff (up to 5 s apart) and is back to full size by itself once the server is.
+A checkout waits at most `:checkout-timeout-ms` (5000 by default), then raises a
+`:connection` store-error; a dead pool raises at once. `:connect-timeout-ms` (20000)
+bounds one connection's open.
+
 ## Publishing
 
 Releases go to [hive](https://github.com/broodlang/hive), the Brood package
